@@ -1,0 +1,784 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::db::{self, DbPool, Skill, SkillInstallation};
+use crate::AppState;
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+/// Metadata extracted from a SKILL.md frontmatter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// A single skill discovered during a directory scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScannedSkill {
+    /// Derived from directory name (lowercase, spaces→hyphens).
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Absolute path to the SKILL.md file.
+    pub file_path: String,
+    /// Absolute path to the skill directory.
+    pub dir_path: String,
+    /// "symlink", "copy", or "native".
+    pub link_type: String,
+    /// Symlink target path, if link_type is "symlink".
+    pub symlink_target: Option<String>,
+    pub is_central: bool,
+}
+
+/// Summary returned by `scan_all_skills`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanResult {
+    pub total_skills: usize,
+    pub agents_scanned: usize,
+    pub skills_by_agent: HashMap<String, usize>,
+}
+
+// ─── Core Functions ───────────────────────────────────────────────────────────
+
+/// Read a SKILL.md file and extract the YAML frontmatter fields `name` and
+/// `description`. Returns `None` if the file is missing, cannot be read, lacks
+/// a frontmatter block, or is missing the required `name` field.
+pub fn parse_skill_md(path: &Path) -> Option<SkillInfo> {
+    let content = std::fs::read_to_string(path).ok()?;
+
+    // Frontmatter must begin on the very first line with "---"
+    let after_open = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))?;
+
+    // Locate the closing "---" delimiter
+    let close_pos = after_open.find("\n---")?;
+    let frontmatter_str = &after_open[..close_pos];
+
+    // Parse the YAML block
+    let yaml: serde_yaml::Value = serde_yaml::from_str(frontmatter_str).ok()?;
+
+    // `name` is required
+    let name = yaml.get("name")?.as_str()?.to_string();
+
+    // `description` is optional
+    let description = yaml
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Some(SkillInfo { name, description })
+}
+
+/// Determine how a skill directory entry was installed at the given path.
+///
+/// Uses `symlink_metadata` (lstat) so the check is performed on the entry
+/// itself rather than its target:
+///
+/// * `"symlink"` — the entry is a symbolic link.
+/// * `"copy"`    — the entry is a regular directory in a platform skills dir.
+/// * `"native"`  — the entry is a regular directory in the central skills dir.
+///
+/// Also returns the symlink target path when the entry is a symlink.
+pub fn detect_link_type(path: &Path, is_central_dir: bool) -> (String, Option<String>) {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = std::fs::read_link(path)
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()));
+            ("symlink".to_string(), target)
+        }
+        _ => {
+            let kind = if is_central_dir { "native" } else { "copy" };
+            (kind.to_string(), None)
+        }
+    }
+}
+
+/// Walk `dir` one level deep, looking for immediate subdirectories that contain
+/// a `SKILL.md` file. For each such subdirectory, `parse_skill_md` and
+/// `detect_link_type` are called to build a `ScannedSkill`.
+///
+/// Entries that cannot be read or lack valid frontmatter are silently skipped.
+pub fn scan_directory(dir: &Path, is_central: bool) -> Vec<ScannedSkill> {
+    let mut skills = Vec::new();
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return skills,
+    };
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+
+        // Use regular metadata (follows symlinks) to check if this is a dir.
+        let meta = match std::fs::metadata(&entry_path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+
+        // Only include entries that contain a SKILL.md file.
+        let skill_md_path = entry_path.join("SKILL.md");
+        if !skill_md_path.exists() {
+            continue;
+        }
+
+        // Parse frontmatter; skip entries with invalid/missing frontmatter.
+        let info = match parse_skill_md(&skill_md_path) {
+            Some(i) => i,
+            None => continue,
+        };
+
+        // Detect link type using lstat on the skill directory itself.
+        let (link_type, symlink_target) = detect_link_type(&entry_path, is_central);
+
+        // Derive a stable ID from the directory name.
+        let id = entry_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_lowercase().replace(' ', "-"))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        skills.push(ScannedSkill {
+            id,
+            name: info.name,
+            description: info.description,
+            file_path: skill_md_path.to_string_lossy().into_owned(),
+            dir_path: entry_path.to_string_lossy().into_owned(),
+            link_type,
+            symlink_target,
+            is_central,
+        });
+    }
+
+    skills
+}
+
+// ─── Tauri Command ────────────────────────────────────────────────────────────
+
+/// Core scanning logic, separated from the Tauri command layer so it can be
+/// unit-tested without a running Tauri runtime.
+pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
+    let agents = db::get_all_agents(pool).await?;
+    let custom_dirs = db::get_scan_directories(pool).await?;
+
+    let mut total_skills: usize = 0;
+    let mut skills_by_agent: HashMap<String, usize> = HashMap::new();
+
+    // ── Per-agent scans ───────────────────────────────────────────────────────
+    for agent in &agents {
+        let dir = Path::new(&agent.global_skills_dir);
+        let is_central = agent.id == "central";
+
+        if !dir.exists() {
+            // Mark agent as not detected and record zero count.
+            let _ = db::update_agent_detected(pool, &agent.id, false).await;
+            skills_by_agent.insert(agent.id.clone(), 0);
+            continue;
+        }
+
+        let _ = db::update_agent_detected(pool, &agent.id, true).await;
+        let scanned = scan_directory(dir, is_central);
+
+        for skill in &scanned {
+            let now = Utc::now().to_rfc3339();
+
+            let db_skill = Skill {
+                id: skill.id.clone(),
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                file_path: skill.file_path.clone(),
+                canonical_path: if is_central {
+                    Some(skill.dir_path.clone())
+                } else {
+                    None
+                },
+                is_central,
+                source: Some(skill.link_type.clone()),
+                content: None,
+                scanned_at: now,
+            };
+            db::upsert_skill(pool, &db_skill).await?;
+
+            let installation = SkillInstallation {
+                skill_id: skill.id.clone(),
+                agent_id: agent.id.clone(),
+                installed_path: skill.file_path.clone(),
+                link_type: skill.link_type.clone(),
+                symlink_target: skill.symlink_target.clone(),
+            };
+            db::upsert_skill_installation(pool, &installation).await?;
+        }
+
+        let count = scanned.len();
+        total_skills += count;
+        skills_by_agent.insert(agent.id.clone(), count);
+    }
+
+    // ── Custom scan directories ───────────────────────────────────────────────
+    // Skills found in user-added directories are added to the `skills` table
+    // but are not attributed to a specific agent installation record.
+    for scan_dir in custom_dirs.iter().filter(|d| d.is_active) {
+        let dir = Path::new(&scan_dir.path);
+        if !dir.exists() {
+            continue;
+        }
+
+        let scanned = scan_directory(dir, false);
+        for skill in &scanned {
+            let now = Utc::now().to_rfc3339();
+            let db_skill = Skill {
+                id: skill.id.clone(),
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                file_path: skill.file_path.clone(),
+                canonical_path: None,
+                is_central: false,
+                source: Some(skill.link_type.clone()),
+                content: None,
+                scanned_at: now,
+            };
+            db::upsert_skill(pool, &db_skill).await?;
+        }
+        total_skills += scanned.len();
+    }
+
+    Ok(ScanResult {
+        total_skills,
+        agents_scanned: agents.len(),
+        skills_by_agent,
+    })
+}
+
+/// Tauri command: scan all agent skill directories and persist the results to
+/// SQLite. Returns a `ScanResult` with per-agent skill counts.
+#[tauri::command]
+pub async fn scan_all_skills(state: State<'_, AppState>) -> Result<ScanResult, String> {
+    scan_all_skills_impl(&state.db).await
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Write a SKILL.md with the given content in `dir/<skill_name>/SKILL.md`.
+    fn create_skill_dir(parent: &Path, dir_name: &str, content: &str) -> std::path::PathBuf {
+        let skill_dir = parent.join(dir_name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+        skill_dir
+    }
+
+    fn valid_skill_md(name: &str, description: &str) -> String {
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n\n# {}\n\nContent.\n",
+            name, description, name
+        )
+    }
+
+    fn skill_md_no_description(name: &str) -> String {
+        format!("---\nname: {}\n---\n\n# {}\n", name, name)
+    }
+
+    // ── parse_skill_md ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_skill_md_valid() {
+        let tmp = TempDir::new().unwrap();
+        let md_path = tmp.path().join("SKILL.md");
+        fs::write(&md_path, valid_skill_md("My Skill", "A great skill")).unwrap();
+
+        let info = parse_skill_md(&md_path).expect("should parse valid SKILL.md");
+        assert_eq!(info.name, "My Skill");
+        assert_eq!(info.description.as_deref(), Some("A great skill"));
+    }
+
+    #[test]
+    fn test_parse_skill_md_no_description() {
+        let tmp = TempDir::new().unwrap();
+        let md_path = tmp.path().join("SKILL.md");
+        fs::write(&md_path, skill_md_no_description("Minimal Skill")).unwrap();
+
+        let info = parse_skill_md(&md_path).expect("should parse frontmatter without description");
+        assert_eq!(info.name, "Minimal Skill");
+        assert!(info.description.is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_md_missing_name() {
+        let tmp = TempDir::new().unwrap();
+        let md_path = tmp.path().join("SKILL.md");
+        fs::write(
+            &md_path,
+            "---\ndescription: Has description but no name\n---\n\nContent.",
+        )
+        .unwrap();
+
+        let result = parse_skill_md(&md_path);
+        assert!(result.is_none(), "should return None when name is missing");
+    }
+
+    #[test]
+    fn test_parse_skill_md_no_frontmatter() {
+        let tmp = TempDir::new().unwrap();
+        let md_path = tmp.path().join("SKILL.md");
+        fs::write(&md_path, "# Just a Markdown file\n\nNo frontmatter here.").unwrap();
+
+        let result = parse_skill_md(&md_path);
+        assert!(result.is_none(), "should return None when frontmatter is absent");
+    }
+
+    #[test]
+    fn test_parse_skill_md_empty_file() {
+        let tmp = TempDir::new().unwrap();
+        let md_path = tmp.path().join("SKILL.md");
+        fs::write(&md_path, "").unwrap();
+
+        let result = parse_skill_md(&md_path);
+        assert!(result.is_none(), "should return None for an empty file");
+    }
+
+    #[test]
+    fn test_parse_skill_md_file_not_found() {
+        let result = parse_skill_md(Path::new("/nonexistent/path/SKILL.md"));
+        assert!(result.is_none(), "should return None for a missing file");
+    }
+
+    #[test]
+    fn test_parse_skill_md_multiline_description() {
+        let tmp = TempDir::new().unwrap();
+        let md_path = tmp.path().join("SKILL.md");
+        // YAML block scalar for multiline strings
+        let content =
+            "---\nname: Block Skill\ndescription: \"Line one. Line two.\"\n---\n\nBody.\n";
+        fs::write(&md_path, content).unwrap();
+
+        let info = parse_skill_md(&md_path).expect("should parse multiline description");
+        assert_eq!(info.name, "Block Skill");
+        assert!(info.description.is_some());
+    }
+
+    // ── detect_link_type ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_detect_link_type_real_dir_platform() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("real-skill");
+        fs::create_dir_all(&dir).unwrap();
+
+        let (kind, target) = detect_link_type(&dir, false);
+        assert_eq!(kind, "copy", "real dir in platform context should be 'copy'");
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn test_detect_link_type_real_dir_central() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("central-skill");
+        fs::create_dir_all(&dir).unwrap();
+
+        let (kind, target) = detect_link_type(&dir, true);
+        assert_eq!(kind, "native", "real dir in central context should be 'native'");
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn test_detect_link_type_symlink() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create a real target directory
+        let target_dir = tmp.path().join("target-skill");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        // Create a symlink pointing to it
+        let link_path = tmp.path().join("linked-skill");
+        symlink(&target_dir, &link_path).expect("failed to create symlink");
+
+        let (kind, sym_target) = detect_link_type(&link_path, false);
+        assert_eq!(kind, "symlink");
+        assert!(
+            sym_target.is_some(),
+            "symlink target path should be returned"
+        );
+    }
+
+    #[test]
+    fn test_detect_link_type_symlink_is_symlink_regardless_of_is_central() {
+        let tmp = TempDir::new().unwrap();
+        let target_dir = tmp.path().join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let link_path = tmp.path().join("link");
+        symlink(&target_dir, &link_path).unwrap();
+
+        // Even in central context, a symlink is a symlink
+        let (kind, _) = detect_link_type(&link_path, true);
+        assert_eq!(kind, "symlink");
+    }
+
+    // ── scan_directory ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_scan_directory_empty() {
+        let tmp = TempDir::new().unwrap();
+        let result = scan_directory(tmp.path(), false);
+        assert!(result.is_empty(), "empty directory should yield no skills");
+    }
+
+    #[test]
+    fn test_scan_directory_finds_single_skill() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(
+            tmp.path(),
+            "cool-skill",
+            &valid_skill_md("Cool Skill", "Does cool things"),
+        );
+
+        let skills = scan_directory(tmp.path(), false);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "cool-skill");
+        assert_eq!(skills[0].name, "Cool Skill");
+        assert_eq!(skills[0].description.as_deref(), Some("Does cool things"));
+    }
+
+    #[test]
+    fn test_scan_directory_finds_multiple_skills() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(tmp.path(), "skill-a", &valid_skill_md("Skill A", "Alpha"));
+        create_skill_dir(tmp.path(), "skill-b", &valid_skill_md("Skill B", "Beta"));
+        create_skill_dir(tmp.path(), "skill-c", &valid_skill_md("Skill C", "Gamma"));
+
+        let mut skills = scan_directory(tmp.path(), false);
+        skills.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(skills.len(), 3);
+        assert_eq!(skills[0].id, "skill-a");
+        assert_eq!(skills[1].id, "skill-b");
+        assert_eq!(skills[2].id, "skill-c");
+    }
+
+    #[test]
+    fn test_scan_directory_skips_dirs_without_skill_md() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(tmp.path(), "valid-skill", &valid_skill_md("Valid", "OK"));
+
+        // A directory without SKILL.md should be ignored
+        fs::create_dir_all(tmp.path().join("no-skill-md")).unwrap();
+
+        let skills = scan_directory(tmp.path(), false);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "valid-skill");
+    }
+
+    #[test]
+    fn test_scan_directory_skips_invalid_frontmatter() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(tmp.path(), "valid-skill", &valid_skill_md("Valid", "OK"));
+        create_skill_dir(
+            tmp.path(),
+            "invalid-skill",
+            "# No frontmatter here\n\nJust content.",
+        );
+
+        let skills = scan_directory(tmp.path(), false);
+        assert_eq!(
+            skills.len(),
+            1,
+            "skill with invalid frontmatter should be skipped"
+        );
+        assert_eq!(skills[0].id, "valid-skill");
+    }
+
+    #[test]
+    fn test_scan_directory_skips_regular_files() {
+        let tmp = TempDir::new().unwrap();
+        // A plain file at the top level should be ignored
+        fs::write(tmp.path().join("README.md"), "# readme").unwrap();
+        create_skill_dir(tmp.path(), "real-skill", &valid_skill_md("Real", "desc"));
+
+        let skills = scan_directory(tmp.path(), false);
+        assert_eq!(skills.len(), 1);
+    }
+
+    #[test]
+    fn test_scan_directory_is_not_recursive() {
+        let tmp = TempDir::new().unwrap();
+        // Create a nested structure (depth 2); only top-level subdirs should be found
+        let deep_dir = tmp.path().join("outer").join("inner");
+        fs::create_dir_all(&deep_dir).unwrap();
+        fs::write(
+            deep_dir.join("SKILL.md"),
+            &valid_skill_md("Deep Skill", "too deep"),
+        )
+        .unwrap();
+
+        let skills = scan_directory(tmp.path(), false);
+        assert!(
+            skills.is_empty(),
+            "scan_directory should not descend more than one level"
+        );
+    }
+
+    #[test]
+    fn test_scan_directory_central_dir_marks_native() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(tmp.path(), "central-skill", &valid_skill_md("Central", "desc"));
+
+        let skills = scan_directory(tmp.path(), true /* is_central */);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].link_type, "native");
+        assert!(skills[0].is_central);
+    }
+
+    #[test]
+    fn test_scan_directory_detects_symlinked_skill() {
+        let tmp = TempDir::new().unwrap();
+        let skills_dir = tmp.path().join("agent-skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a real skill in another location (central-like)
+        let central_dir = tmp.path().join("central");
+        create_skill_dir(&central_dir, "my-skill", &valid_skill_md("My Skill", "desc"));
+
+        // Symlink it into the agent skills dir
+        let link = skills_dir.join("my-skill");
+        symlink(central_dir.join("my-skill"), &link).unwrap();
+
+        let skills = scan_directory(&skills_dir, false);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].link_type, "symlink");
+        assert!(skills[0].symlink_target.is_some());
+    }
+
+    #[test]
+    fn test_scan_directory_nonexistent_dir_returns_empty() {
+        let result = scan_directory(Path::new("/nonexistent/path/skills"), false);
+        assert!(result.is_empty());
+    }
+
+    // ── scan_all_skills_impl ──────────────────────────────────────────────────
+
+    async fn setup_test_db() -> DbPool {
+        use crate::db;
+        use sqlx::SqlitePool;
+        let pool = SqlitePool::connect(":memory:")
+            .await
+            .expect("in-memory DB");
+        db::init_database(&pool).await.expect("init");
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_empty_dirs() {
+        use sqlx::SqlitePool;
+
+        // Build a pool with tables but no seeded agents so the test is
+        // isolated from whatever the user has installed on their machine.
+        let pool = SqlitePool::connect(":memory:")
+            .await
+            .expect("in-memory DB");
+        db::init_database(&pool).await.expect("init");
+        // Remove all seeded agents so we control exactly what gets scanned.
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .expect("delete agents");
+
+        // Add one agent whose skills dir definitely does not exist.
+        let dummy_agent = db::Agent {
+            id: "empty-agent".to_string(),
+            display_name: "Empty Agent".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: "/nonexistent/path/skills".to_string(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &dummy_agent)
+            .await
+            .expect("insert dummy agent");
+
+        let result = scan_all_skills_impl(&pool).await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r.total_skills, 0);
+        assert_eq!(r.agents_scanned, 1);
+        assert_eq!(r.skills_by_agent.get("empty-agent").copied(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_persists_skills() {
+        use crate::db;
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        // Add a custom agent pointing to our temp directory
+        let test_agent = db::Agent {
+            id: "test-agent".to_string(),
+            display_name: "Test Agent".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &test_agent).await.unwrap();
+
+        // Create skills in the temp directory
+        create_skill_dir(
+            tmp.path(),
+            "alpha-skill",
+            &valid_skill_md("Alpha Skill", "First skill"),
+        );
+        create_skill_dir(
+            tmp.path(),
+            "beta-skill",
+            &valid_skill_md("Beta Skill", "Second skill"),
+        );
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        // Test agent should have 2 skills
+        assert_eq!(result.skills_by_agent.get("test-agent").copied(), Some(2));
+
+        // Skills should be in the DB
+        let skills_in_db = db::get_skills_by_agent(&pool, "test-agent").await.unwrap();
+        assert_eq!(skills_in_db.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_central_skills_are_marked() {
+        use crate::db;
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        // Override the "central" agent's dir with our temp dir by inserting a
+        // custom agent with id "central-test".
+        let central_agent = db::Agent {
+            id: "central-test".to_string(),
+            display_name: "Central Test".to_string(),
+            category: "central".to_string(),
+            global_skills_dir: tmp.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &central_agent).await.unwrap();
+
+        create_skill_dir(
+            tmp.path(),
+            "canon-skill",
+            &valid_skill_md("Canon Skill", "Canonical"),
+        );
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        // Not is_central because agent id is "central-test", not "central"
+        // (the "central" agent points to a non-existent dir in CI)
+        let skill = db::get_skill_by_id(&pool, "canon-skill").await.unwrap();
+        assert!(skill.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_with_custom_scan_directory() {
+        use crate::db;
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        // Add a custom scan directory
+        db::add_scan_directory(&pool, tmp.path().to_str().unwrap(), Some("Test Dir"))
+            .await
+            .unwrap();
+
+        create_skill_dir(
+            tmp.path(),
+            "custom-dir-skill",
+            &valid_skill_md("Custom Dir Skill", "From custom dir"),
+        );
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        // Skill should be in total count (custom dirs contribute to total)
+        assert!(result.total_skills > 0);
+
+        // Skill should be in the DB
+        let skill = db::get_skill_by_id(&pool, "custom-dir-skill").await.unwrap();
+        assert!(skill.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_returns_per_agent_counts() {
+        use crate::db;
+
+        let tmp_a = TempDir::new().unwrap();
+        let tmp_b = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        let agent_a = db::Agent {
+            id: "agent-a".to_string(),
+            display_name: "Agent A".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp_a.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        let agent_b = db::Agent {
+            id: "agent-b".to_string(),
+            display_name: "Agent B".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp_b.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &agent_a).await.unwrap();
+        db::insert_custom_agent(&pool, &agent_b).await.unwrap();
+
+        create_skill_dir(
+            tmp_a.path(),
+            "skill-x",
+            &valid_skill_md("Skill X", "In A"),
+        );
+        create_skill_dir(
+            tmp_a.path(),
+            "skill-y",
+            &valid_skill_md("Skill Y", "In A too"),
+        );
+        create_skill_dir(
+            tmp_b.path(),
+            "skill-z",
+            &valid_skill_md("Skill Z", "In B"),
+        );
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(result.skills_by_agent.get("agent-a").copied(), Some(2));
+        assert_eq!(result.skills_by_agent.get("agent-b").copied(), Some(1));
+    }
+}

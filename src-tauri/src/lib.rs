@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod db;
 
 use db::DbPool;
@@ -45,7 +46,9 @@ pub fn run() {
             app.manage(AppState { db: pool });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![])
+        .invoke_handler(tauri::generate_handler![
+            commands::scanner::scan_all_skills
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
