@@ -65,8 +65,22 @@ export interface SkillDetail extends Skill {
   collections: string[];
 }
 
-export interface SkillWithLinks extends Skill {
-  installations: Record<string, SkillInstallation>;
+export interface SkillWithLinks {
+  id: string;
+  name: string;
+  description?: string;
+  file_path: string;
+  canonical_path?: string;
+  is_central: boolean;
+  source?: string;
+  scanned_at: string;
+  /** Agent IDs that currently have this skill installed (symlink or copy). */
+  linked_agents: string[];
+}
+
+export interface BatchInstallResult {
+  succeeded: string[];
+  failed: Array<{ agent_id: string; error: string }>;
 }
 
 // ─── Collection Types ─────────────────────────────────────────────────────────
