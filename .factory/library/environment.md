@@ -14,5 +14,5 @@
 ## Notes
 - macOS is the primary target. Use `cfg!(target_os = "macos")` guards where needed.
 - On macOS, symlinks work natively; on Windows use `junction` type.
-- Tauri dev server runs on port 1420 by default.
+- Tauri dev server runs on port 24200 (custom, to avoid conflicts with other services).
 - The `reference/` directory is in .gitignore — it is not part of the project source.

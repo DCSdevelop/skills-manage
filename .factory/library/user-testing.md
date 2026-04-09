@@ -2,13 +2,13 @@
 
 ## Validation Surface
 
-**Primary surface:** Tauri v2 desktop app webview, accessible at `http://localhost:1420` during `pnpm tauri dev`.
+**Primary surface:** Tauri v2 desktop app webview, accessible at `http://localhost:24200` during `pnpm tauri dev`.
 
 **Testing tool:** `agent-browser` — connects to the Vite dev server URL to interact with the React UI.
 
 **Setup requirements:**
 1. `pnpm tauri dev` must be running (starts both Vite and Tauri)
-2. Wait for the webview to load at localhost:1420
+2. Wait for the webview to load at localhost:24200
 3. The scanner runs automatically on startup — wait for sidebar to populate before testing
 4. If port `1420` is already occupied by another local dev server, start Tauri with a merged config override on another allowed port in `1420-1430` (for example `pnpm tauri dev -c '{"build":{"beforeDevCommand":"pnpm exec vite --port 1422","devUrl":"http://localhost:1422"}}'`) and point validators at that port.
 
