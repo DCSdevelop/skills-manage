@@ -100,6 +100,16 @@ export interface CollectionWithSkills extends Collection {
   skill_ids: string[];
 }
 
+export interface CollectionDetail extends Collection {
+  /** Full skill objects that are members of this collection. */
+  skills: Skill[];
+}
+
+export interface CollectionBatchInstallResult {
+  succeeded: string[];
+  failed: Array<{ agent_id: string; error: string }>;
+}
+
 // ─── Settings Types ───────────────────────────────────────────────────────────
 
 export interface ScanDirectory {

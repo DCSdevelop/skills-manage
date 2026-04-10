@@ -1,6 +1,9 @@
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Plus, Loader2 } from "lucide-react";
+import { Settings, Plus, Loader2, Upload } from "lucide-react";
 import { usePlatformStore } from "@/stores/platformStore";
+import { useCollectionStore } from "@/stores/collectionStore";
+import { CollectionEditor } from "@/components/collection/CollectionEditor";
 import { cn } from "@/lib/utils";
 
 // ─── Badge ────────────────────────────────────────────────────────────────────
@@ -86,11 +89,44 @@ export function Sidebar() {
   const { pathname } = useLocation();
   const { agents, skillsByAgent, isLoading } = usePlatformStore();
 
-  // Separate platform agents from the central one
+  const collections = useCollectionStore((s) => s.collections);
+  const loadCollections = useCollectionStore((s) => s.loadCollections);
+  const importCollection = useCollectionStore((s) => s.importCollection);
+
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  // Load collections on mount.
+  useEffect(() => {
+    loadCollections();
+  }, [loadCollections]);
+
+  // Separate platform agents from the central one.
   const platformAgents = agents.filter(
     (a) => a.id !== "central" && a.is_enabled
   );
   const centralCount = skillsByAgent["central"] ?? 0;
+
+  // Handle JSON file import for collections.
+  function handleImportClick() {
+    importInputRef.current?.click();
+  }
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const collection = await importCollection(text);
+      navigate(`/collection/${collection.id}`);
+    } catch (err) {
+      console.error("Import failed:", err);
+    } finally {
+      // Reset input so the same file can be imported again.
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  }
 
   return (
     <nav
@@ -145,28 +181,69 @@ export function Sidebar() {
           <SectionHeader
             label="Collections"
             action={
-              <button
-                className="p-0.5 rounded hover:bg-sidebar-accent text-muted-foreground hover:text-sidebar-accent-foreground transition-colors"
-                onClick={() => {
-                  /* TODO: open create collection dialog */
-                }}
-                aria-label="新建 Collection"
-              >
-                <Plus className="size-3.5" />
-              </button>
+              <div className="flex items-center gap-0.5">
+                {/* Import button */}
+                <button
+                  className="p-0.5 rounded hover:bg-sidebar-accent text-muted-foreground hover:text-sidebar-accent-foreground transition-colors"
+                  onClick={handleImportClick}
+                  aria-label="Import Collection from JSON"
+                  title="Import Collection"
+                >
+                  <Upload className="size-3.5" />
+                </button>
+                {/* Create new collection button */}
+                <button
+                  className="p-0.5 rounded hover:bg-sidebar-accent text-muted-foreground hover:text-sidebar-accent-foreground transition-colors"
+                  onClick={() => setIsEditorOpen(true)}
+                  aria-label="新建 Collection"
+                  title="新建 Collection"
+                >
+                  <Plus className="size-3.5" />
+                </button>
+              </div>
             }
           />
-          {/* Empty state with create prompt */}
-          <div className="px-3 py-1">
-            <button
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => {
-                /* TODO: open create collection dialog */
-              }}
-            >
-              + 新建
-            </button>
-          </div>
+
+          {/* Collection list */}
+          {collections.length === 0 ? (
+            <div className="px-3 py-1">
+              <button
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setIsEditorOpen(true)}
+              >
+                + 新建
+              </button>
+            </div>
+          ) : (
+            <>
+              {collections.map((col) => (
+                <NavItem
+                  key={col.id}
+                  label={col.name}
+                  isActive={pathname === `/collection/${col.id}`}
+                  onClick={() => navigate(`/collection/${col.id}`)}
+                />
+              ))}
+              <div className="px-3 py-1">
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setIsEditorOpen(true)}
+                >
+                  + 新建
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Hidden file input for JSON import */}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImportFile}
+            aria-label="Import collection JSON file"
+          />
         </section>
       </div>
 
@@ -185,6 +262,13 @@ export function Sidebar() {
           <span>设置</span>
         </button>
       </div>
+
+      {/* Create Collection dialog */}
+      <CollectionEditor
+        open={isEditorOpen}
+        onOpenChange={setIsEditorOpen}
+        collection={null}
+      />
     </nav>
   );
 }

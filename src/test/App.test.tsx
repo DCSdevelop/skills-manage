@@ -21,6 +21,33 @@ vi.mock("../stores/platformStore", () => ({
   }),
 }));
 
+// Mock collectionStore to prevent real Tauri invoke calls during tests
+vi.mock("../stores/collectionStore", () => ({
+  useCollectionStore: vi.fn().mockImplementation((selector?: unknown) => {
+    const state = {
+      collections: [],
+      currentDetail: null,
+      isLoading: false,
+      isLoadingDetail: false,
+      error: null,
+      loadCollections: vi.fn(),
+      createCollection: vi.fn(),
+      updateCollection: vi.fn(),
+      deleteCollection: vi.fn(),
+      loadCollectionDetail: vi.fn(),
+      addSkillToCollection: vi.fn(),
+      removeSkillFromCollection: vi.fn(),
+      batchInstallCollection: vi.fn(),
+      exportCollection: vi.fn(),
+      importCollection: vi.fn(),
+    };
+    if (typeof selector === "function") {
+      return selector(state);
+    }
+    return state;
+  }),
+}));
+
 describe("App", () => {
   it("renders the app shell with sidebar", () => {
     render(

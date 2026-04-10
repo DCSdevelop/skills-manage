@@ -9,6 +9,13 @@ vi.mock("../stores/platformStore", () => ({
   usePlatformStore: vi.fn(),
 }));
 
+// Mock the collectionStore
+vi.mock("../stores/collectionStore", () => ({
+  useCollectionStore: vi.fn(),
+}));
+
+import { useCollectionStore } from "../stores/collectionStore";
+
 const mockAgents = [
   {
     id: "claude-code",
@@ -52,6 +59,24 @@ const defaultStoreState = {
   rescan: vi.fn(),
 };
 
+const defaultCollectionState = {
+  collections: [],
+  currentDetail: null,
+  isLoading: false,
+  isLoadingDetail: false,
+  error: null,
+  loadCollections: vi.fn(),
+  createCollection: vi.fn(),
+  updateCollection: vi.fn(),
+  deleteCollection: vi.fn(),
+  loadCollectionDetail: vi.fn(),
+  addSkillToCollection: vi.fn(),
+  removeSkillFromCollection: vi.fn(),
+  batchInstallCollection: vi.fn(),
+  exportCollection: vi.fn(),
+  importCollection: vi.fn(),
+};
+
 function renderSidebar(initialPath = "/central") {
   vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
   return render(
@@ -64,6 +89,10 @@ function renderSidebar(initialPath = "/central") {
 describe("Sidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: collection store returns empty state.
+    vi.mocked(useCollectionStore).mockImplementation((selector) =>
+      selector(defaultCollectionState)
+    );
   });
 
   // ── Rendering ─────────────────────────────────────────────────────────────
@@ -208,5 +237,46 @@ describe("Sidebar", () => {
     const centralButton = screen.getByRole("button", { name: /Central Skills/ });
     expect(centralButton).not.toBeDisabled();
     fireEvent.click(centralButton);
+  });
+
+  // ── Collections ───────────────────────────────────────────────────────────
+
+  it("shows collection names when collections are loaded", () => {
+    vi.mocked(useCollectionStore).mockImplementation((selector) =>
+      selector({
+        ...defaultCollectionState,
+        collections: [
+          { id: "col-1", name: "Frontend", created_at: "2026-04-09T00:00:00Z", updated_at: "2026-04-09T00:00:00Z" },
+          { id: "col-2", name: "Backend", created_at: "2026-04-09T00:00:00Z", updated_at: "2026-04-09T00:00:00Z" },
+        ],
+      })
+    );
+    renderSidebar();
+    expect(screen.getByRole("button", { name: "Frontend" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Backend" })).toBeInTheDocument();
+  });
+
+  it("highlights active collection route", () => {
+    vi.mocked(useCollectionStore).mockImplementation((selector) =>
+      selector({
+        ...defaultCollectionState,
+        collections: [
+          { id: "col-1", name: "Frontend", created_at: "2026-04-09T00:00:00Z", updated_at: "2026-04-09T00:00:00Z" },
+        ],
+      })
+    );
+    vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
+    render(
+      <MemoryRouter initialEntries={["/collection/col-1"]}>
+        <Sidebar />
+      </MemoryRouter>
+    );
+    const colButton = screen.getByRole("button", { name: "Frontend" });
+    expect(colButton.className).toContain("font-medium");
+  });
+
+  it("renders import button in Collections section", () => {
+    renderSidebar();
+    expect(screen.getByRole("button", { name: /Import Collection/i })).toBeInTheDocument();
   });
 });
