@@ -53,6 +53,18 @@ User clicks "Install to..." on a Central Skill
 | `~/.openclaw/skills/` | OpenClaw global skills |
 | `~/.skillsmanage/` | App data (SQLite db) |
 
+## Theming
+
+**Catppuccin 4-flavor palette** — The app uses Catppuccin's color system with 4 selectable flavors:
+- **Mocha** — Darkest, cozy feeling (default dark). Base #1e1e2e.
+- **Macchiato** — Medium contrast dark. Base #24273a.
+- **Frappé** — Muted dark. Base #303446.
+- **Latte** — Light mode (default light). Base #eff1f5.
+
+Each flavor maps 26 Catppuccin colors (Rosewater, Flamingo, Pink, Mauve, Red, Maroon, Peach, Yellow, Green, Teal, Sky, Sapphire, Blue, Lavender, Text, Subtext1, Subtext0, Overlay2, Overlay1, Overlay0, Surface2, Surface1, Surface0, Base, Mantle, Crust) to the shadcn/ui semantic tokens (background, foreground, card, primary, secondary, muted, accent, border, etc.).
+
+**Implementation** — CSS custom properties per `[data-theme="mocha"]`, `[data-theme="frappe"]`, `[data-theme="macchiato"]`, `[data-theme="latte"]` selector. `themeStore` (Zustand) manages current flavor, persisted to localStorage. Setting `document.documentElement.dataset.theme` triggers instant color swap. Accent color is Green for all flavors (Catppuccin's Green: Mocha #a6e3a1, Latte #40a02b, etc.).
+
 ## Invariants
 
 1. A symlink in a platform dir MUST point to a real directory inside `~/.agents/skills/`.
