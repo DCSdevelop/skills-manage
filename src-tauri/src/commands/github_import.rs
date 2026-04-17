@@ -2,6 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::HashSet;
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use tauri::State;
 
@@ -115,6 +116,72 @@ struct GitHubRepoFixture {
     root_contents: Vec<GitHubContent>,
     directory_contents: std::collections::HashMap<String, Vec<GitHubContent>>,
     raw_files: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GitHubAccessDenialKind {
+    RateLimited {
+        reset_at: Option<String>,
+        remaining: Option<String>,
+    },
+    AuthenticationOrPermission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubAccessDenial {
+    kind: GitHubAccessDenialKind,
+    operation: &'static str,
+    status: reqwest::StatusCode,
+    github_message: Option<String>,
+}
+
+impl fmt::Display for GitHubAccessDenial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = self.status.as_u16();
+        match &self.kind {
+            GitHubAccessDenialKind::RateLimited {
+                reset_at,
+                remaining,
+            } => {
+                write!(
+                    f,
+                    "GitHub API access was denied while {} because the rate limit was exceeded (HTTP {}). Retry later",
+                    self.operation, status
+                )?;
+                if let Some(reset_at) = reset_at {
+                    write!(f, " after {} UTC", reset_at)?;
+                }
+                write!(f, " or use authenticated GitHub requests")?;
+                if let Some(remaining) = remaining {
+                    write!(f, " (remaining quota: {})", remaining)?;
+                }
+                if let Some(message) = &self.github_message {
+                    write!(f, ". GitHub said: {}", message)?;
+                } else {
+                    write!(f, ".")?;
+                }
+                Ok(())
+            }
+            GitHubAccessDenialKind::AuthenticationOrPermission => {
+                write!(
+                    f,
+                    "GitHub denied access while {} (HTTP {}). The repository may require authentication, your API quota may need authenticated requests, or the token/permissions are insufficient. Verify repository access, sign in with a GitHub token that can read the repo, or retry later",
+                    self.operation, status
+                )?;
+                if let Some(message) = &self.github_message {
+                    write!(f, ". GitHub said: {}", message)?;
+                } else {
+                    write!(f, ".")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubErrorResponse {
+    message: Option<String>,
 }
 
 #[tauri::command]
@@ -400,10 +467,12 @@ async fn resolve_repo_ref(repo_url: &str) -> Result<GitHubRepoRef, String> {
         return Err("GitHub repository not found.".to_string());
     }
     if !response.status().is_success() {
-        return Err(format!(
-            "Failed to inspect GitHub repository: HTTP {}",
-            response.status()
-        ));
+        let status = response.status();
+        return Err(
+            classify_github_denial_response(response, "inspecting the repository")
+                .await
+                .unwrap_or_else(|| format!("Failed to inspect GitHub repository: HTTP {}", status)),
+        );
     }
 
     let payload: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -760,25 +829,106 @@ async fn fetch_directory_contents(
         return Err(format!("GitHub repository contents path '{}' returned HTTP 404", path));
     }
 
+    if !response.status().is_success() {
+        return Err(classify_github_denial_response(response, "reading repository contents")
+            .await
+            .unwrap_or_else(|| "Failed to inspect GitHub repository contents.".to_string()));
+    }
+
     response
-        .error_for_status()
-        .map_err(|e| format!("Failed to inspect GitHub repository contents: {}", e))?
         .json::<Vec<GitHubContent>>()
         .await
         .map_err(|e| format!("Failed to decode GitHub repository contents: {}", e))
 }
 
 async fn fetch_raw_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    client
+    let response = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("Failed to download skill metadata: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Failed to download skill metadata: {}", e))?
+        .map_err(|e| format!("Failed to download skill metadata: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(classify_github_denial_response(response, "downloading skill metadata")
+            .await
+            .unwrap_or_else(|| "Failed to download skill metadata.".to_string()));
+    }
+
+    response
         .text()
         .await
         .map_err(|e| format!("Failed to read skill metadata: {}", e))
+}
+
+async fn classify_github_denial_response(
+    response: reqwest::Response,
+    operation: &'static str,
+) -> Option<String> {
+    let status = response.status();
+    if status != reqwest::StatusCode::UNAUTHORIZED
+        && status != reqwest::StatusCode::FORBIDDEN
+        && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        return None;
+    }
+
+    let headers = response.headers().clone();
+    let body = response.text().await.ok();
+    let github_message = body.as_deref().and_then(parse_github_error_message);
+
+    let remaining = header_value(&headers, "x-ratelimit-remaining");
+    let reset_at = header_value(&headers, "x-ratelimit-reset")
+        .as_deref()
+        .and_then(parse_rate_limit_reset_epoch);
+
+    let message_lower = github_message
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let remaining_is_zero = remaining.as_deref() == Some("0");
+    let kind = if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || remaining_is_zero
+        || message_lower.contains("rate limit")
+        || message_lower.contains("api rate limit exceeded")
+        || header_value(&headers, "x-ratelimit-resource").is_some()
+    {
+        GitHubAccessDenialKind::RateLimited {
+            reset_at,
+            remaining,
+        }
+    } else {
+        GitHubAccessDenialKind::AuthenticationOrPermission
+    };
+
+    Some(
+        GitHubAccessDenial {
+            kind,
+            operation,
+            status,
+            github_message,
+        }
+        .to_string(),
+    )
+}
+
+fn parse_github_error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<GitHubErrorResponse>(body)
+        .ok()
+        .and_then(|payload| payload.message)
+}
+
+fn header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn parse_rate_limit_reset_epoch(raw: &str) -> Option<String> {
+    let epoch = raw.parse::<i64>().ok()?;
+    chrono::DateTime::<Utc>::from_timestamp(epoch, 0).map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
@@ -921,6 +1071,43 @@ mod tests {
         let parsed = parse_frontmatter(&sample_frontmatter("alpha", "desc")).expect("fm");
         assert_eq!(parsed.name, "alpha");
         assert_eq!(parsed.description.as_deref(), Some("desc"));
+    }
+
+    #[test]
+    fn classify_github_rate_limit_denial_returns_actionable_message() {
+        let denial = GitHubAccessDenial {
+            kind: GitHubAccessDenialKind::RateLimited {
+                reset_at: Some("2026-04-17 12:34:56".to_string()),
+                remaining: Some("0".to_string()),
+            },
+            operation: "inspecting the repository",
+            status: reqwest::StatusCode::FORBIDDEN,
+            github_message: Some("API rate limit exceeded for 1.2.3.4.".to_string()),
+        };
+
+        let message = denial.to_string();
+
+        assert!(message.contains("rate limit was exceeded"));
+        assert!(message.contains("Retry later after 2026-04-17 12:34:56 UTC"));
+        assert!(message.contains("authenticated GitHub requests"));
+        assert!(message.contains("API rate limit exceeded"));
+    }
+
+    #[test]
+    fn classify_github_permission_denial_returns_actionable_message() {
+        let denial = GitHubAccessDenial {
+            kind: GitHubAccessDenialKind::AuthenticationOrPermission,
+            operation: "reading repository contents",
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            github_message: Some("Requires authentication".to_string()),
+        };
+
+        let message = denial.to_string();
+
+        assert!(message.contains("denied access"));
+        assert!(message.contains("require authentication"));
+        assert!(message.contains("token/permissions are insufficient"));
+        assert!(message.contains("Requires authentication"));
     }
 
     #[tokio::test]
@@ -1120,6 +1307,46 @@ mod tests {
         );
         let central_skills = db::get_central_skills(&pool).await.expect("central skills");
         assert!(central_skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn denied_import_selection_performs_no_writes_or_db_mutations() {
+        let pool = setup_test_db().await;
+        let central_root = tempdir().expect("central");
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_root.path().to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .expect("update central");
+
+        let before_skills = db::get_central_skills(&pool).await.expect("before skills");
+        let before_entries = std::fs::read_dir(central_root.path())
+            .expect("read central before")
+            .count();
+
+        let result = import_github_repo_skills_impl(
+            &pool,
+            "https://github.com/example/restricted-repo",
+            vec![GitHubSkillImportSelection {
+                source_path: "skills/private-skill".to_string(),
+                resolution: DuplicateResolution::Overwrite,
+                renamed_skill_id: None,
+            }],
+        )
+        .await;
+
+        let error = result.expect_err("denied import should fail");
+        assert!(
+            error.contains("GitHub denied access") || error.contains("rate limit was exceeded"),
+            "unexpected denial message: {error}"
+        );
+
+        let after_skills = db::get_central_skills(&pool).await.expect("after skills");
+        let after_entries = std::fs::read_dir(central_root.path())
+            .expect("read central after")
+            .count();
+        assert_eq!(before_entries, after_entries, "denied import should not write files");
+        assert_eq!(before_skills.len(), after_skills.len(), "denied import should not mutate DB");
     }
 
     #[tokio::test]
