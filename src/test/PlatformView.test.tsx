@@ -47,6 +47,7 @@ vi.mock("../components/skill/SkillDetailDrawer", () => ({
 import { usePlatformStore } from "../stores/platformStore";
 import { useSkillStore } from "../stores/skillStore";
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
+import * as tauriBridge from "@/lib/tauri";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -175,6 +176,26 @@ describe("PlatformView", () => {
     renderPlatformView();
     expect(screen.getByText("中央技能库 · 符号链接")).toBeInTheDocument();
     expect(screen.getByText("独立安装 · 复制安装")).toBeInTheDocument();
+  });
+
+  it("renders browser fixture installed card on the localhost validation surface without Tauri", async () => {
+    const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
+    mockUsePlatformStore.mockRestore();
+    mockUseSkillStore.mockRestore();
+    mockUseCentralSkillsStore.mockRestore();
+
+    render(
+      <MemoryRouter initialEntries={["/platform/claude-code"]}>
+        <Routes>
+          <Route path="/platform/:agentId" element={<PlatformView />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole("button", { name: /查看 fixture-central-skill 的详情/i })).toBeInTheDocument();
+    expect(screen.getByText("中央技能库 · 符号链接")).toBeInTheDocument();
+
+    isTauriSpy.mockRestore();
   });
 
   // ── Empty State ───────────────────────────────────────────────────────────

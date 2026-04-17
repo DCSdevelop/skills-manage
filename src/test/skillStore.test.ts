@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ScannedSkill } from "../types";
+import * as tauriBridge from "@/lib/tauri";
 
 // Mock Tauri core before importing the store
 vi.mock("@tauri-apps/api/core", () => ({
@@ -129,5 +130,22 @@ describe("skillStore", () => {
     const state = useSkillStore.getState();
     expect(state.skillsByAgent["claude-code"]).toEqual(mockSkills);
     expect(state.skillsByAgent["cursor"]).toEqual(cursorSkills);
+  });
+
+  it("returns deterministic browser fixture skills when Tauri runtime is unavailable", async () => {
+    const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
+
+    await useSkillStore.getState().getSkillsByAgent("claude-code");
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useSkillStore.getState().skillsByAgent["claude-code"]).toEqual([
+      expect.objectContaining({
+        id: "fixture-central-skill",
+        link_type: "symlink",
+        is_central: true,
+      }),
+    ]);
+
+    isTauriSpy.mockRestore();
   });
 });

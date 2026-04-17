@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { UnlistenFn } from "@tauri-apps/api/event";
 import {
   ScanRoot,
   DiscoveredProject,
@@ -10,6 +9,28 @@ import {
   DiscoverCompletePayload,
   DiscoverImportResult,
 } from "@/types";
+import { invoke, listen, isTauriRuntime } from "@/lib/tauri";
+
+const BROWSER_FIXTURE_DISCOVERED_PROJECTS: DiscoveredProject[] = [
+  {
+    project_path: "/fixture/project",
+    project_name: "Fixture Project",
+    skills: [
+      {
+        id: "fixture-discover-skill",
+        name: "fixture-discover-skill",
+        description: "Browser validation fixture for Discover drawer entry.",
+        file_path: "/fixture/project/.skills/fixture-discover-skill/SKILL.md",
+        dir_path: "/fixture/project/.skills/fixture-discover-skill",
+        platform_id: "claude-code",
+        platform_name: "Claude Code",
+        project_path: "/fixture/project",
+        project_name: "Fixture Project",
+        is_already_central: false,
+      },
+    ],
+  },
+];
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -226,6 +247,13 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
 
   loadDiscoveredSkills: async () => {
     set({ error: null });
+    if (!isTauriRuntime()) {
+      set({
+        discoveredProjects: BROWSER_FIXTURE_DISCOVERED_PROJECTS,
+        totalSkillsFound: 1,
+      });
+      return;
+    }
     try {
       const projects = await invoke<DiscoveredProject[]>("get_discovered_skills");
       const totalSkills = projects.reduce((sum, p) => sum + p.skills.length, 0);
@@ -239,6 +267,13 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
   },
 
   refreshCounts: async () => {
+    if (!isTauriRuntime()) {
+      set({
+        discoveredProjects: BROWSER_FIXTURE_DISCOVERED_PROJECTS,
+        totalSkillsFound: 1,
+      });
+      return;
+    }
     try {
       const projects = await invoke<DiscoveredProject[]>("get_discovered_skills");
       const totalSkills = projects.reduce((sum, p) => sum + p.skills.length, 0);

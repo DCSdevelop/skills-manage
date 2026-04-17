@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Collection, CollectionDetail } from "../types";
+import * as tauriBridge from "@/lib/tauri";
 
 // Mock Tauri core before importing the store
 vi.mock("@tauri-apps/api/core", () => ({
@@ -93,6 +94,26 @@ describe("collectionStore", () => {
     const state = useCollectionStore.getState();
     expect(state.error).toContain("DB error");
     expect(state.isLoading).toBe(false);
+  });
+
+  it("returns deterministic browser fixture collections when Tauri runtime is unavailable", async () => {
+    const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
+
+    await useCollectionStore.getState().loadCollections();
+    await useCollectionStore.getState().loadCollectionDetail("fixture-collection");
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useCollectionStore.getState().collections).toEqual([
+      expect.objectContaining({ id: "fixture-collection" }),
+    ]);
+    expect(useCollectionStore.getState().currentDetail).toEqual(
+      expect.objectContaining({
+        id: "fixture-collection",
+        skills: [expect.objectContaining({ id: "fixture-central-skill" })],
+      })
+    );
+
+    isTauriSpy.mockRestore();
   });
 
   // ── createCollection ───────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import * as tauriBridge from "@/lib/tauri";
 import { ScanRoot, DiscoveredProject, DiscoverResult, DiscoverImportResult } from "../types";
 
 // Mock Tauri core before importing the store
@@ -274,6 +275,23 @@ describe("discoverStore", () => {
 
     const state = useDiscoverStore.getState();
     expect(state.error).toContain("load failed");
+  });
+
+  it("returns deterministic browser fixture discover results when Tauri runtime is unavailable", async () => {
+    const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
+
+    await useDiscoverStore.getState().loadDiscoveredSkills();
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual([
+      expect.objectContaining({
+        project_name: "Fixture Project",
+        skills: [expect.objectContaining({ id: "fixture-discover-skill" })],
+      }),
+    ]);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(1);
+
+    isTauriSpy.mockRestore();
   });
 
   // ── importToCentral ──────────────────────────────────────────────────────

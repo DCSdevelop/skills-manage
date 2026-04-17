@@ -42,6 +42,7 @@ vi.mock("../components/skill/SkillDetailDrawer", () => ({
 
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
 import { usePlatformStore } from "../stores/platformStore";
+import * as tauriBridge from "@/lib/tauri";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,22 @@ describe("CentralSkillsView", () => {
       name: /将 .* 安装到平台/i,
     });
     expect(installButtons).toHaveLength(2);
+  });
+
+  it("renders browser fixture skill card on the localhost validation surface without Tauri", async () => {
+    const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
+    mockUseCentralSkillsStore.mockRestore();
+    mockUsePlatformStore.mockRestore();
+
+    render(
+      <MemoryRouter>
+        <CentralSkillsView />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole("button", { name: /查看 fixture-central-skill 的详情/i })).toBeInTheDocument();
+
+    isTauriSpy.mockRestore();
   });
 
   it("skill name is a clickable button for detail navigation", () => {

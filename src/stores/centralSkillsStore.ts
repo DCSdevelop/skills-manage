@@ -1,6 +1,50 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { AgentWithStatus, BatchInstallResult, SkillWithLinks } from "@/types";
+
+const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
+  {
+    id: "claude-code",
+    display_name: "Claude Code",
+    category: "coding",
+    global_skills_dir: "~/.claude/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "cursor",
+    display_name: "Cursor",
+    category: "coding",
+    global_skills_dir: "~/.cursor/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "central",
+    display_name: "Central Skills",
+    category: "central",
+    global_skills_dir: "~/.agents/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+];
+
+const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
+  {
+    id: "fixture-central-skill",
+    name: "fixture-central-skill",
+    description: "Browser validation fixture for Central and drawer entry flows.",
+    file_path: "~/.agents/skills/fixture-central-skill/SKILL.md",
+    canonical_path: "~/.agents/skills/fixture-central-skill",
+    is_central: true,
+    source: "browser-fixture",
+    scanned_at: "2026-04-17T00:00:00.000Z",
+    linked_agents: ["claude-code"],
+  },
+];
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +83,14 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
    */
   loadCentralSkills: async () => {
     set({ isLoading: true, error: null });
+    if (!isTauriRuntime()) {
+      set({
+        skills: BROWSER_FIXTURE_SKILLS,
+        agents: BROWSER_FIXTURE_AGENTS,
+        isLoading: false,
+      });
+      return;
+    }
     try {
       const [skills, agents] = await Promise.all([
         invoke<SkillWithLinks[]>("get_central_skills"),

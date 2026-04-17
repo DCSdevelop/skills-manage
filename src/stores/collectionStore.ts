@@ -1,6 +1,36 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { Collection, CollectionDetail, CollectionBatchInstallResult } from "@/types";
+
+const BROWSER_FIXTURE_COLLECTIONS: Collection[] = [
+  {
+    id: "fixture-collection",
+    name: "Fixture Collection",
+    description: "Browser validation fixture collection.",
+    created_at: "2026-04-17T00:00:00.000Z",
+    updated_at: "2026-04-17T00:00:00.000Z",
+  },
+];
+
+const BROWSER_FIXTURE_COLLECTION_DETAIL: CollectionDetail = {
+  id: "fixture-collection",
+  name: "Fixture Collection",
+  description: "Browser validation fixture collection.",
+  created_at: "2026-04-17T00:00:00.000Z",
+  updated_at: "2026-04-17T00:00:00.000Z",
+  skills: [
+    {
+      id: "fixture-central-skill",
+      name: "fixture-central-skill",
+      description: "Browser validation fixture for Collection drawer entry flows.",
+      file_path: "~/.agents/skills/fixture-central-skill/SKILL.md",
+      canonical_path: "~/.agents/skills/fixture-central-skill",
+      is_central: true,
+      source: "browser-fixture",
+      scanned_at: "2026-04-17T00:00:00.000Z",
+    },
+  ],
+};
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +69,10 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
    */
   loadCollections: async () => {
     set({ isLoading: true, error: null });
+    if (!isTauriRuntime()) {
+      set({ collections: BROWSER_FIXTURE_COLLECTIONS, isLoading: false });
+      return;
+    }
     try {
       const collections = await invoke<Collection[]>("get_collections");
       set({ collections: collections ?? [], isLoading: false });
@@ -123,6 +157,13 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
    */
   loadCollectionDetail: async (id: string) => {
     set({ isLoadingDetail: true, error: null });
+    if (!isTauriRuntime()) {
+      set({
+        currentDetail: id === BROWSER_FIXTURE_COLLECTION_DETAIL.id ? BROWSER_FIXTURE_COLLECTION_DETAIL : null,
+        isLoadingDetail: false,
+      });
+      return;
+    }
     try {
       const detail = await invoke<CollectionDetail>("get_collection_detail", { collectionId: id });
       set({ currentDetail: detail, isLoadingDetail: false });
@@ -210,6 +251,10 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
   },
 
   refreshCounts: async () => {
+    if (!isTauriRuntime()) {
+      set({ collections: BROWSER_FIXTURE_COLLECTIONS });
+      return;
+    }
     try {
       const collections = await invoke<Collection[]>("get_collections");
       set({ collections: collections ?? [] });

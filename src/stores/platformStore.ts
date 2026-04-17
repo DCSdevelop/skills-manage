@@ -1,6 +1,46 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { AgentWithStatus, ScanResult } from "@/types";
+
+const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
+  {
+    id: "claude-code",
+    display_name: "Claude Code",
+    category: "coding",
+    global_skills_dir: "~/.claude/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "cursor",
+    display_name: "Cursor",
+    category: "coding",
+    global_skills_dir: "~/.cursor/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "central",
+    display_name: "Central Skills",
+    category: "central",
+    global_skills_dir: "~/.agents/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+];
+
+const BROWSER_FIXTURE_COUNTS: ScanResult = {
+  total_skills: 1,
+  agents_scanned: 3,
+  skills_by_agent: {
+    "claude-code": 1,
+    cursor: 1,
+    central: 1,
+  },
+};
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +72,14 @@ export const usePlatformStore = create<PlatformState>((set) => ({
    */
   initialize: async () => {
     set({ isLoading: true, error: null });
+    if (!isTauriRuntime()) {
+      set({
+        agents: BROWSER_FIXTURE_AGENTS,
+        skillsByAgent: BROWSER_FIXTURE_COUNTS.skills_by_agent,
+        isLoading: false,
+      });
+      return;
+    }
     try {
       const [agents, scanResult] = await Promise.all([
         invoke<AgentWithStatus[]>("get_agents"),
@@ -53,6 +101,14 @@ export const usePlatformStore = create<PlatformState>((set) => ({
    */
   rescan: async () => {
     set({ isLoading: true, error: null });
+    if (!isTauriRuntime()) {
+      set({
+        agents: BROWSER_FIXTURE_AGENTS,
+        skillsByAgent: BROWSER_FIXTURE_COUNTS.skills_by_agent,
+        isLoading: false,
+      });
+      return;
+    }
     try {
       const [agents, scanResult] = await Promise.all([
         invoke<AgentWithStatus[]>("get_agents"),
@@ -70,6 +126,15 @@ export const usePlatformStore = create<PlatformState>((set) => ({
 
   refreshCounts: async () => {
     set({ isRefreshing: true, error: null });
+    if (!isTauriRuntime()) {
+      set((state) => ({
+        agents: BROWSER_FIXTURE_AGENTS,
+        skillsByAgent: BROWSER_FIXTURE_COUNTS.skills_by_agent,
+        isRefreshing: false,
+        isLoading: state.isLoading,
+      }));
+      return;
+    }
     try {
       const [agents, scanResult] = await Promise.all([
         invoke<AgentWithStatus[]>("get_agents"),
