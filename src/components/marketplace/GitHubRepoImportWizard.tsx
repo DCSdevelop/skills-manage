@@ -15,12 +15,15 @@ import {
   GitHubRepoPreview,
   GitHubSkillImportSelection,
   GitHubSkillPreview,
+  AgentWithStatus,
+  SkillWithLinks,
 } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { isTauriRuntime } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import { InstallDialog } from "@/components/central/InstallDialog";
 
 type WizardStep = "input" | "preview" | "confirm" | "result";
 
@@ -41,9 +44,19 @@ interface GitHubRepoImportWizardProps {
   isImporting: boolean;
   importResult: GitHubRepoImportResult | null;
   onPreview: () => Promise<void> | void;
-  onImport: (selections: GitHubSkillImportSelection[]) => Promise<void> | void;
+  onImport: (
+    selections: GitHubSkillImportSelection[]
+  ) => Promise<GitHubRepoImportResult | void> | GitHubRepoImportResult | void;
   onReset: () => void;
   launcherLabel: string;
+  availableAgents?: AgentWithStatus[];
+  installableSkills?: SkillWithLinks[];
+  onInstallImportedSkill?: (
+    skillId: string,
+    agentIds: string[],
+    method: "symlink" | "copy"
+  ) => Promise<void>;
+  onAfterImportSuccess?: (result: GitHubRepoImportResult) => Promise<void> | void;
 }
 
 function buildInitialSelections(preview: GitHubRepoPreview | null): Record<string, SelectionState> {
@@ -78,16 +91,22 @@ export function GitHubRepoImportWizard({
   onImport,
   onReset,
   launcherLabel,
+  availableAgents = [],
+  installableSkills = [],
+  onInstallImportedSkill,
+  onAfterImportSuccess,
 }: GitHubRepoImportWizardProps) {
   const { t } = useTranslation();
   const [step, setStep] = useState<WizardStep>("input");
   const [selectionState, setSelectionState] = useState<Record<string, SelectionState>>({});
+  const [postImportTargetSkillId, setPostImportTargetSkillId] = useState<string | null>(null);
   const browserMode = !isTauriRuntime();
 
   useEffect(() => {
     if (!open) {
       setStep("input");
       setSelectionState({});
+      setPostImportTargetSkillId(null);
       return;
     }
     if (importResult) {
@@ -101,6 +120,11 @@ export function GitHubRepoImportWizard({
     }
     setStep("input");
   }, [open, preview, importResult]);
+
+  const postImportSkill = useMemo(() => {
+    if (!postImportTargetSkillId) return null;
+    return installableSkills.find((skill) => skill.id === postImportTargetSkillId) ?? null;
+  }, [installableSkills, postImportTargetSkillId]);
 
   const selectedSkills = useMemo(() => {
     if (!preview) return [];
@@ -148,15 +172,35 @@ export function GitHubRepoImportWizard({
     await onPreview();
   }
 
-  async function handleConfirmImport() {
-    await onImport(selectedImportPayload);
-  }
-
   function handleClose(nextOpen: boolean) {
     if (!nextOpen) {
+      setPostImportTargetSkillId(null);
       onReset();
     }
     onOpenChange(nextOpen);
+  }
+
+  async function handleImportConfirmClick() {
+    const result = await onImport(selectedImportPayload);
+    if (result) {
+      await onAfterImportSuccess?.(result);
+    } else if (importResult) {
+      await onAfterImportSuccess?.(importResult);
+    }
+  }
+
+  function handleInstallImported(skillId: string) {
+    setPostImportTargetSkillId(skillId);
+  }
+
+  async function handleInstallDialogConfirm(
+    skillId: string,
+    agentIds: string[],
+    method: "symlink" | "copy"
+  ) {
+    if (!onInstallImportedSkill) return;
+    await onInstallImportedSkill(skillId, agentIds, method);
+    setPostImportTargetSkillId(null);
   }
 
   return (
@@ -391,7 +435,7 @@ export function GitHubRepoImportWizard({
                     <Button variant="outline" onClick={() => setStep("preview")}>
                       <span>{t("common.close")}</span>
                     </Button>
-                    <Button onClick={handleConfirmImport} disabled={!canConfirm || isImporting}>
+                    <Button onClick={handleImportConfirmClick} disabled={!canConfirm || isImporting}>
                       {isImporting ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
                       <span>{t("common.import")}</span>
                     </Button>
@@ -415,10 +459,21 @@ export function GitHubRepoImportWizard({
               <ul className="space-y-2 text-sm">
                 {importResult.importedSkills.map((skill) => (
                   <li key={`${skill.sourcePath}-${skill.importedSkillId}`} className="flex items-center justify-between gap-3">
-                    <span>{skill.skillName}</span>
-                    <code className="rounded bg-background px-2 py-1 text-[11px]">
-                      {skill.importedSkillId}
-                    </code>
+                    <div className="min-w-0">
+                      <div>{skill.skillName}</div>
+                      <code className="mt-1 inline-flex rounded bg-background px-2 py-1 text-[11px]">
+                        {skill.importedSkillId}
+                      </code>
+                    </div>
+                    {onInstallImportedSkill ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleInstallImported(skill.importedSkillId)}
+                      >
+                        <span>{t("marketplace.githubImportInstallImportedSkill")}</span>
+                      </Button>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -433,6 +488,18 @@ export function GitHubRepoImportWizard({
           ) : null}
         </div>
       </DialogContent>
+
+      <InstallDialog
+        open={Boolean(postImportSkill)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setPostImportTargetSkillId(null);
+          }
+        }}
+        skill={postImportSkill}
+        agents={availableAgents}
+        onInstall={handleInstallDialogConfirm}
+      />
     </Dialog>
   );
 }

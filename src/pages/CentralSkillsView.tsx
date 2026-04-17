@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { usePlatformStore } from "@/stores/platformStore";
+import { useSkillStore } from "@/stores/skillStore";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { InstallDialog } from "@/components/central/InstallDialog";
@@ -81,6 +82,9 @@ export function CentralSkillsView() {
 
   // Keep the platform sidebar counts in sync after install.
   const refreshCounts = usePlatformStore((state) => state.refreshCounts);
+  const platformAgents = usePlatformStore((state) => state.agents);
+  const skillsByAgent = useSkillStore((state) => state.skillsByAgent);
+  const getSkillsByAgent = useSkillStore((state) => state.getSkillsByAgent);
   const githubImport = useMarketplaceStore((state) => state.githubImport);
   const previewGitHubRepoImport = useMarketplaceStore((state) => state.previewGitHubRepoImport);
   const importGitHubRepoSkills = useMarketplaceStore((state) => state.importGitHubRepoSkills);
@@ -173,12 +177,42 @@ export function CentralSkillsView() {
     selections: Parameters<typeof importGitHubRepoSkills>[1]
   ) {
     try {
-      await importGitHubRepoSkills(githubRepoUrl, selections);
+      const result = await importGitHubRepoSkills(githubRepoUrl, selections);
       await Promise.all([refreshCounts(), loadCentralSkills()]);
       toast.success(t("marketplace.githubImportCentralSuccess"));
+      return result;
     } catch (err) {
       toast.error(t("marketplace.installError", { error: String(err) }));
+      throw err;
     }
+  }
+
+  async function handleInstallImportedSkill(
+    skillId: string,
+    agentIds: string[],
+    method: "symlink" | "copy"
+  ) {
+    await handleInstall(skillId, agentIds, method);
+    await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
+  }
+
+  const installableImportedSkills = useMemo(() => {
+    if (!githubImport.importResult) return [];
+    const importedIds = new Set(
+      githubImport.importResult.importedSkills.map((skill) => skill.importedSkillId)
+    );
+    return skills.filter((skill) => importedIds.has(skill.id));
+  }, [githubImport.importResult, skills]);
+
+  const availableInstallAgents = useMemo(
+    () => (agents.length > 0 ? agents : platformAgents),
+    [agents, platformAgents]
+  );
+
+  async function handleAfterImportSuccess() {
+    const agentIds = Object.keys(skillsByAgent);
+    if (agentIds.length === 0) return;
+    await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
   }
 
   return (
@@ -289,6 +323,10 @@ export function CentralSkillsView() {
         importResult={githubImport.importResult}
         onPreview={handleGitHubPreview}
         onImport={handleGitHubImport}
+        availableAgents={availableInstallAgents}
+        installableSkills={installableImportedSkills}
+        onInstallImportedSkill={handleInstallImportedSkill}
+        onAfterImportSuccess={handleAfterImportSuccess}
         onReset={() => {
           resetGitHubImport();
           setGitHubRepoUrl("");

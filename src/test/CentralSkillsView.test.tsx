@@ -13,6 +13,10 @@ vi.mock("../stores/platformStore", () => ({
   usePlatformStore: vi.fn(),
 }));
 
+vi.mock("../stores/skillStore", () => ({
+  useSkillStore: vi.fn(),
+}));
+
 vi.mock("../stores/marketplaceStore", () => ({
   useMarketplaceStore: vi.fn(),
 }));
@@ -46,6 +50,7 @@ vi.mock("../components/skill/SkillDetailDrawer", () => ({
 
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
 import { usePlatformStore } from "../stores/platformStore";
+import { useSkillStore } from "../stores/skillStore";
 import { useMarketplaceStore } from "../stores/marketplaceStore";
 import * as tauriBridge from "@/lib/tauri";
 
@@ -108,11 +113,13 @@ const mockLoadCentralSkills = vi.fn();
 const mockInstallSkill = vi.fn();
 const mockTogglePlatformLink = vi.fn();
 const mockRescan = vi.fn();
+const mockGetSkillsByAgent = vi.fn();
 const mockPreviewGitHubRepoImport = vi.fn();
 const mockImportGitHubRepoSkills = vi.fn();
 const mockResetGitHubImport = vi.fn();
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
+const mockUseSkillStore = vi.mocked(useSkillStore);
 const mockUseMarketplaceStore = vi.mocked(useMarketplaceStore);
 
 function buildCentralStoreState(overrides = {}) {
@@ -144,6 +151,16 @@ function buildPlatformStoreState(overrides = {}) {
   };
 }
 
+function buildSkillStoreState(overrides = {}) {
+  return {
+    skillsByAgent: {},
+    loadingByAgent: {},
+    error: null,
+    getSkillsByAgent: mockGetSkillsByAgent,
+    ...overrides,
+  };
+}
+
 function renderCentralSkillsView() {
   mockUseCentralSkillsStore.mockImplementation((selector?: unknown) => {
     const state = buildCentralStoreState();
@@ -152,6 +169,11 @@ function renderCentralSkillsView() {
   });
   mockUsePlatformStore.mockImplementation((selector?: unknown) => {
     const state = buildPlatformStoreState();
+    if (typeof selector === "function") return selector(state);
+    return state;
+  });
+  mockUseSkillStore.mockImplementation((selector?: unknown) => {
+    const state = buildSkillStoreState();
     if (typeof selector === "function") return selector(state);
     return state;
   });
@@ -411,6 +433,54 @@ describe("CentralSkillsView", () => {
       expect(screen.getByTestId("skill-detail-drawer")).toBeInTheDocument();
     });
     expect(screen.getByText("drawer-skill:frontend-design")).toBeInTheDocument();
+  });
+
+  it("offers post-import platform installation for imported skills", async () => {
+    mockUseMarketplaceStore.mockImplementation((selector?: unknown) => {
+      const state = {
+        githubImport: {
+          isPreviewLoading: false,
+          isImporting: false,
+          preview: null,
+          importResult: {
+            repo: {
+              owner: "dorukardahan",
+              repo: "twitterapi-io-skill",
+              branch: "main",
+              normalizedUrl: "https://github.com/dorukardahan/twitterapi-io-skill",
+            },
+            importedSkills: [
+              {
+                sourcePath: "twitterapi-io-skill/SKILL.md",
+                originalSkillId: "frontend-design",
+                importedSkillId: "frontend-design",
+                skillName: "frontend-design",
+                targetDirectory: "/Users/test/.agents/skills/frontend-design",
+                resolution: "overwrite",
+              },
+            ],
+            skippedSkills: [],
+          },
+          previewedRepoUrl: "https://github.com/dorukardahan/twitterapi-io-skill",
+          error: null,
+        },
+        previewGitHubRepoImport: mockPreviewGitHubRepoImport,
+        importGitHubRepoSkills: mockImportGitHubRepoSkills,
+        resetGitHubImport: mockResetGitHubImport,
+      };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    render(
+      <MemoryRouter>
+        <CentralSkillsView />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /从 GitHub 导入/i }));
+
+    expect(await screen.findByRole("button", { name: /安装到平台/i })).toBeInTheDocument();
   });
 
   it("preserves search and scroll state when closing the drawer and restores focus", async () => {

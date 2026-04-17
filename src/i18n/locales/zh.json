@@ -409,8 +409,9 @@
     "confirmImportDesc": "将 {{count}} 个选中的技能导入到规范的中央技能库。",
     "resolveConflictsBeforeImport": "请先处理所有已选技能的冲突再继续导入。",
     "githubImportSuccessTitle": "导入完成",
-    "githubImportSuccessDesc": "已将 {{count}} 个技能导入中央技能库。",
+    "githubImportSuccessDesc": "已将 {{count}} 个技能导入中央技能库。现在你可以把任意已导入技能安装到指定平台。",
     "githubImportSkipped": "已跳过 {{count}} 个技能。",
-    "githubImportCentralSuccess": "GitHub 仓库技能已导入中央技能库"
+    "githubImportCentralSuccess": "GitHub 仓库技能已导入中央技能库",
+    "githubImportInstallImportedSkill": "安装到平台"
   }
 }

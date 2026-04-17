@@ -409,8 +409,9 @@
     "confirmImportDesc": "Import {{count}} selected skill(s) into canonical Central storage.",
     "resolveConflictsBeforeImport": "Resolve all selected conflicts before importing.",
     "githubImportSuccessTitle": "Import complete",
-    "githubImportSuccessDesc": "{{count}} skill(s) were imported into Central.",
+    "githubImportSuccessDesc": "{{count}} skill(s) were imported into Central. You can now install any imported skill to specific platforms.",
     "githubImportSkipped": "{{count}} skill(s) were skipped.",
-    "githubImportCentralSuccess": "GitHub repo skills imported into Central"
+    "githubImportCentralSuccess": "GitHub repo skills imported into Central",
+    "githubImportInstallImportedSkill": "Install to platforms"
   }
 }

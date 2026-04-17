@@ -117,6 +117,7 @@ const mockImportGitHubRepoSkills = vi.fn();
 const mockResetGitHubImport = vi.fn();
 const mockLoadCentralSkills = vi.fn();
 const mockInstallCentralSkill = vi.fn();
+const mockGetSkillsByAgent = vi.fn();
 
 vi.mock("sonner", async () => {
   const actual = await vi.importActual<typeof import("sonner")>("sonner");
@@ -151,9 +152,29 @@ vi.mock("@/stores/marketplaceStore", () => ({
 }));
 
 vi.mock("@/stores/platformStore", () => ({
-  usePlatformStore: (selector: (state: { rescan: typeof mockRescan }) => unknown) =>
+  usePlatformStore: (selector: (state: { rescan: typeof mockRescan; agents: Array<{ id: string; display_name: string; category: string; global_skills_dir: string; is_detected: boolean; is_builtin: boolean; is_enabled: boolean }> }) => unknown) =>
     selector({
       rescan: mockRescan,
+      agents: [
+        {
+          id: "claude-code",
+          display_name: "Claude Code",
+          category: "coding",
+          global_skills_dir: "~/.claude/skills/",
+          is_detected: true,
+          is_builtin: true,
+          is_enabled: true,
+        },
+        {
+          id: "central",
+          display_name: "Central Skills",
+          category: "central",
+          global_skills_dir: "~/.agents/skills/",
+          is_detected: true,
+          is_builtin: true,
+          is_enabled: true,
+        },
+      ],
     }),
 }));
 
@@ -170,6 +191,16 @@ vi.mock("@/stores/centralSkillsStore", () => ({
       getState: () => ({ skills: [] }),
     }
   ),
+}));
+
+vi.mock("@/stores/skillStore", () => ({
+  useSkillStore: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({
+      skillsByAgent: {},
+      loadingByAgent: {},
+      error: null,
+      getSkillsByAgent: mockGetSkillsByAgent,
+    }),
 }));
 
 import { MarketplaceView } from "@/pages/MarketplaceView";
@@ -197,6 +228,7 @@ describe("MarketplaceView", () => {
     mockResetGitHubImport.mockReset();
     mockLoadCentralSkills.mockReset();
     mockInstallCentralSkill.mockReset();
+    mockGetSkillsByAgent.mockReset();
     mockToastSuccess.mockReset();
     mockToastError.mockReset();
 
@@ -490,6 +522,41 @@ describe("MarketplaceView", () => {
     expect(await screen.findByText("twitterapi-io")).toBeInTheDocument();
     expect(screen.getByText(/Preview is read-only and performs no write/i)).toBeInTheDocument();
     expect(mockImportGitHubRepoSkills).not.toHaveBeenCalled();
+  });
+
+  it("offers post-import platform installation for imported github skills", async () => {
+    storeState.githubImport = {
+      isPreviewLoading: false,
+      isImporting: false,
+      preview: null,
+      importResult: {
+        repo: {
+          owner: "dorukardahan",
+          repo: "twitterapi-io-skill",
+          branch: "main",
+          normalizedUrl: "https://github.com/dorukardahan/twitterapi-io-skill",
+        },
+        importedSkills: [
+          {
+            sourcePath: "twitterapi-io-skill/SKILL.md",
+            originalSkillId: "cached-skill",
+            importedSkillId: "cached-skill",
+            skillName: "Cached Skill",
+            targetDirectory: "/Users/test/.agents/skills/cached-skill",
+            resolution: "overwrite",
+          },
+        ],
+        skippedSkills: [],
+      },
+      previewedRepoUrl: "https://github.com/dorukardahan/twitterapi-io-skill",
+      error: null,
+    };
+
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import GitHub repo" }));
+
+    expect(await screen.findByRole("button", { name: /Install to platforms/i })).toBeInTheDocument();
   });
 
   it("shows a friendly desktop-only state for the github import wizard in browser mode", async () => {

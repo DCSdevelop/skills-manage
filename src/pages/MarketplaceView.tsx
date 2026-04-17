@@ -22,6 +22,8 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
 import { usePlatformStore } from "@/stores/platformStore";
+import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
+import { useSkillStore } from "@/stores/skillStore";
 import { SkillRegistry } from "@/types";
 import {
   OFFICIAL_PUBLISHERS,
@@ -220,6 +222,13 @@ export function MarketplaceView() {
   const resetGitHubImport = useMarketplaceStore((s) => s.resetGitHubImport);
 
   const rescan = usePlatformStore((s) => s.rescan);
+  const platformAgents = usePlatformStore((s) => s.agents);
+  const centralSkills = useCentralSkillsStore((s) => s.skills);
+  const centralAgents = useCentralSkillsStore((s) => s.agents);
+  const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
+  const installCentralSkill = useCentralSkillsStore((s) => s.installSkill);
+  const skillsByAgent = useSkillStore((s) => s.skillsByAgent);
+  const getSkillsByAgent = useSkillStore((s) => s.getSkillsByAgent);
 
   // Local state
   const [activeTab, setActiveTab] = useState<TabId>("recommended");
@@ -252,6 +261,12 @@ export function MarketplaceView() {
       selectRegistry(registries[0].id);
     }
   }, [activeTab, selectedRegistryId, registries, selectRegistry]);
+
+  useEffect(() => {
+    if (centralSkills.length === 0) {
+      void loadCentralSkills();
+    }
+  }, [centralSkills.length, loadCentralSkills]);
 
   const selectedRegistryObj = useMemo(
     () => registries.find((r) => r.id === selectedRegistryId) ?? null,
@@ -517,14 +532,44 @@ export function MarketplaceView() {
 
   async function handleGitHubImport(selections: Parameters<typeof importGitHubRepoSkills>[1]) {
     try {
-      await importGitHubRepoSkills(githubRepoUrl, selections);
-      await Promise.all([rescan(), loadRegistries()]);
+      const result = await importGitHubRepoSkills(githubRepoUrl, selections);
+      await Promise.all([rescan(), loadRegistries(), loadCentralSkills()]);
       toast.success(
         lang === "zh" ? "GitHub 仓库技能已导入中央技能库" : "GitHub repo skills imported to Central"
       );
+      return result;
     } catch (err) {
       toast.error(String(err));
+      throw err;
     }
+  }
+
+  const installableImportedSkills = useMemo(() => {
+    if (!githubImport.importResult) return [];
+    const importedIds = new Set(
+      githubImport.importResult.importedSkills.map((skill) => skill.importedSkillId)
+    );
+    return centralSkills.filter((skill) => importedIds.has(skill.id));
+  }, [centralSkills, githubImport.importResult]);
+
+  const availableInstallAgents = useMemo(
+    () => (centralAgents.length > 0 ? centralAgents : platformAgents),
+    [centralAgents, platformAgents]
+  );
+
+  async function handleInstallImportedSkill(
+    skillId: string,
+    agentIds: string[],
+    method: "symlink" | "copy"
+  ) {
+    await installCentralSkill(skillId, agentIds, method);
+    await Promise.all([rescan(), loadCentralSkills(), ...agentIds.map((agentId) => getSkillsByAgent(agentId))]);
+  }
+
+  async function handleAfterImportSuccess() {
+    const agentIds = Object.keys(skillsByAgent);
+    if (agentIds.length === 0) return;
+    await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
   }
 
   // ── Tabs ───────────────────────────────────────────────────────────────
@@ -1115,6 +1160,10 @@ export function MarketplaceView() {
         importResult={githubImport.importResult}
         onPreview={handleGitHubPreview}
         onImport={handleGitHubImport}
+        availableAgents={availableInstallAgents}
+        installableSkills={installableImportedSkills}
+        onInstallImportedSkill={handleInstallImportedSkill}
+        onAfterImportSuccess={handleAfterImportSuccess}
         onReset={() => {
           resetGitHubImport();
           setGitHubRepoUrl("");
