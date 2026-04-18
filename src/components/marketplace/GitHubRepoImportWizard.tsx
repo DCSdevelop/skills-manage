@@ -161,6 +161,13 @@ export function GitHubRepoImportWizard({
   }, [selectedSkills, selectionState]);
 
   const canConfirm = selectedSkills.length > 0 && !blockingConflict;
+  const isInputStep = step === "input" && !preview && !importResult;
+  const dialogContentClassName = cn(
+    "flex flex-col overflow-hidden p-0 transition-[width,max-width,height] duration-200 ease-out",
+    isInputStep
+      ? "h-auto max-h-[min(92vh,32rem)] !w-[min(92vw,48rem)] !max-w-[min(92vw,48rem)]"
+      : "h-[min(90vh,760px)] !w-[min(94vw,1180px)] !max-w-[min(94vw,1180px)] xl:!w-[min(95vw,1280px)] xl:!max-w-[min(95vw,1280px)]"
+  );
 
   const selectedImportPayload = useMemo<GitHubSkillImportSelection[]>(() => {
     return selectedSkills.map((skill) => {
@@ -221,7 +228,7 @@ export function GitHubRepoImportWizard({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="flex h-[min(92vh,860px)] !w-[min(98vw,1520px)] !max-w-[min(98vw,1520px)] flex-col overflow-hidden p-0 xl:!w-[min(99vw,1680px)] xl:!max-w-[min(99vw,1680px)]">
+      <DialogContent className={dialogContentClassName}>
         <div className="shrink-0 border-b border-border/70 px-6 pb-4 pt-6">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -293,7 +300,12 @@ export function GitHubRepoImportWizard({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+        <div
+          className={cn(
+            "px-6 py-4",
+            preview || importResult ? "min-h-0 flex-1 overflow-y-auto" : "overflow-visible"
+          )}
+        >
           {preview ? (
             step === "confirm" ? (
               <div className="space-y-3 rounded-xl border border-border/70 bg-card/80 p-4">
@@ -347,7 +359,7 @@ export function GitHubRepoImportWizard({
                   </div>
                 </div>
 
-                <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(360px,0.95fr)_minmax(0,1.65fr)] xl:grid-cols-[minmax(420px,0.9fr)_minmax(0,1.8fr)]">
+                <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.45fr)] xl:grid-cols-[minmax(360px,0.88fr)_minmax(0,1.52fr)]">
                   <div className="flex min-h-[22rem] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/70">
                     <div className="border-b border-border/60 px-4 py-3">
                       <div className="text-sm font-semibold">

@@ -577,21 +577,21 @@ describe("MarketplaceView", () => {
 
     const dialog = await screen.findByRole("dialog");
     const content = dialog.querySelector('[data-slot="dialog-content"]');
-    expect(content?.className).toContain("w-[min(98vw,1520px)]");
-    expect(content?.className).toContain("xl:w-[min(99vw,1680px)]");
+    expect(content?.className).toContain("w-[min(94vw,1180px)]");
+    expect(content?.className).toContain("xl:w-[min(95vw,1280px)]");
 
     const splitLayout = screen
       .getByTestId("github-import-summary-list")
       .closest(".grid");
     expect(splitLayout?.className).toContain(
-      "lg:grid-cols-[minmax(360px,0.95fr)_minmax(0,1.65fr)]"
+      "lg:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.45fr)]"
     );
     expect(splitLayout?.className).toContain(
-      "xl:grid-cols-[minmax(420px,0.9fr)_minmax(0,1.8fr)]"
+      "xl:grid-cols-[minmax(360px,0.88fr)_minmax(0,1.52fr)]"
     );
   });
 
-  it("uses the wide desktop shell from the initial github import input step", async () => {
+  it("uses a medium adaptive shell for the initial github import input step", async () => {
     renderView();
 
     fireEvent.click(screen.getByRole("button", { name: "Import GitHub repo" }));
@@ -599,22 +599,59 @@ describe("MarketplaceView", () => {
     const dialog = await screen.findByRole("dialog");
     const content = dialog.querySelector('[data-slot="dialog-content"]');
 
-    expect(content?.className).toContain("w-[min(98vw,1520px)]");
-    expect(content?.className).toContain("max-w-[min(98vw,1520px)]");
-    expect(content?.className).toContain("xl:w-[min(99vw,1680px)]");
-    expect(content?.className).toContain("xl:max-w-[min(99vw,1680px)]");
-    expect(content?.className).toContain("!max-w-[min(98vw,1520px)]");
+    expect(content?.className).toContain("h-auto");
+    expect(content?.className).toContain("max-h-[min(92vh,32rem)]");
+    expect(content?.className).toContain("w-[min(92vw,48rem)]");
+    expect(content?.className).toContain("max-w-[min(92vw,48rem)]");
   });
 
-  it("keeps the shared dialog shell from reintroducing a small desktop max-width cap", async () => {
+  it("widens the preview step without returning to the oversized shell", async () => {
+    mockPreviewGitHubRepoImport.mockImplementation(async () => {
+      storeState.githubImport = {
+        isPreviewLoading: false,
+        isImporting: false,
+        preview: {
+          repo: {
+            owner: "anthropics",
+            repo: "skills",
+            branch: "main",
+            normalizedUrl: "https://github.com/anthropics/skills",
+          },
+          skills: [
+            {
+              sourcePath: "skills/first/SKILL.md",
+              skillId: "first-skill",
+              skillName: "First Skill",
+              description: "First skill full description",
+              rootDirectory: "skills",
+              skillDirectoryName: "first",
+              downloadUrl: "https://example.com/first",
+              conflict: null,
+            },
+          ],
+        },
+        importResult: null,
+        previewedRepoUrl: "https://github.com/anthropics/skills",
+        error: null,
+      };
+    });
+
     renderView();
 
     fireEvent.click(screen.getByRole("button", { name: "Import GitHub repo" }));
+    fireEvent.change(screen.getByLabelText("GitHub repository URL"), {
+      target: { value: "https://github.com/anthropics/skills" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview import" }));
 
     const dialog = await screen.findByRole("dialog");
     const content = dialog.querySelector('[data-slot="dialog-content"]');
 
-    expect(content?.className).toContain("!max-w-[min(98vw,1520px)]");
+    expect(content?.className).toContain("h-[min(90vh,760px)]");
+    expect(content?.className).toContain("w-[min(94vw,1180px)]");
+    expect(content?.className).toContain("max-w-[min(94vw,1180px)]");
+    expect(content?.className).toContain("xl:w-[min(95vw,1280px)]");
+    expect(content?.className).toContain("xl:max-w-[min(95vw,1280px)]");
     expect(content?.className).not.toContain("sm:max-w-sm");
   });
 
