@@ -36,6 +36,23 @@ pub struct SkillInstallation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentSkillObservation {
+    pub row_id: String,
+    pub agent_id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub file_path: String,
+    pub dir_path: String,
+    pub source_kind: String,
+    pub source_root: String,
+    pub link_type: String,
+    pub symlink_target: Option<String>,
+    pub is_read_only: bool,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Agent {
     pub id: String,
     pub display_name: String,
@@ -121,6 +138,27 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             symlink_target TEXT,
             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (skill_id, agent_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS agent_skill_observations (
+            row_id         TEXT PRIMARY KEY,
+            agent_id       TEXT NOT NULL,
+            skill_id       TEXT NOT NULL,
+            name           TEXT NOT NULL,
+            description    TEXT,
+            file_path      TEXT NOT NULL,
+            dir_path       TEXT NOT NULL,
+            source_kind    TEXT NOT NULL,
+            source_root    TEXT NOT NULL,
+            link_type      TEXT NOT NULL,
+            symlink_target TEXT,
+            is_read_only   BOOLEAN NOT NULL DEFAULT 0,
+            scanned_at     TEXT NOT NULL
         )",
     )
     .execute(pool)
@@ -886,8 +924,29 @@ pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+fn observation_to_skill(observation: AgentSkillObservation) -> Skill {
+    Skill {
+        id: observation.skill_id,
+        name: observation.name,
+        description: observation.description,
+        file_path: observation.file_path,
+        canonical_path: None,
+        is_central: false,
+        source: Some(observation.link_type),
+        content: None,
+        scanned_at: observation.scanned_at,
+    }
+}
+
 /// Retrieve all skills installed for a given agent.
 pub async fn get_skills_by_agent(pool: &DbPool, agent_id: &str) -> Result<Vec<Skill>, String> {
+    if agent_id == "claude-code" {
+        let observations = get_agent_skill_observations(pool, agent_id).await?;
+        if !observations.is_empty() {
+            return Ok(observations.into_iter().map(observation_to_skill).collect());
+        }
+    }
+
     sqlx::query_as::<_, Skill>(
         "SELECT s.* FROM skills s
          JOIN skill_installations si ON s.id = si.skill_id
@@ -921,6 +980,19 @@ pub struct SkillForAgent {
     pub is_central: bool,
 }
 
+fn observation_to_skill_for_agent(observation: AgentSkillObservation) -> SkillForAgent {
+    SkillForAgent {
+        id: observation.skill_id,
+        name: observation.name,
+        description: observation.description,
+        file_path: observation.file_path,
+        dir_path: observation.dir_path,
+        link_type: observation.link_type,
+        symlink_target: observation.symlink_target,
+        is_central: false,
+    }
+}
+
 /// Retrieve skills installed for a given agent, enriched with installation
 /// metadata (`dir_path`, `link_type`, `symlink_target`) required by the
 /// platform-view skill cards.
@@ -928,6 +1000,16 @@ pub async fn get_skills_for_agent(
     pool: &DbPool,
     agent_id: &str,
 ) -> Result<Vec<SkillForAgent>, String> {
+    if agent_id == "claude-code" {
+        let observations = get_agent_skill_observations(pool, agent_id).await?;
+        if !observations.is_empty() {
+            return Ok(observations
+                .into_iter()
+                .map(observation_to_skill_for_agent)
+                .collect());
+        }
+    }
+
     sqlx::query_as::<_, SkillForAgent>(
         "SELECT s.id, s.name, s.description, s.file_path,
                 si.installed_path AS dir_path,
@@ -937,6 +1019,63 @@ pub async fn get_skills_for_agent(
          FROM skills s
          JOIN skill_installations si ON s.id = si.skill_id
          WHERE si.agent_id = ?",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub async fn upsert_agent_skill_observation(
+    pool: &DbPool,
+    observation: &AgentSkillObservation,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO agent_skill_observations
+         (row_id, agent_id, skill_id, name, description, file_path, dir_path,
+          source_kind, source_root, link_type, symlink_target, is_read_only, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(row_id) DO UPDATE SET
+           agent_id       = excluded.agent_id,
+           skill_id       = excluded.skill_id,
+           name           = excluded.name,
+           description    = excluded.description,
+           file_path      = excluded.file_path,
+           dir_path       = excluded.dir_path,
+           source_kind    = excluded.source_kind,
+           source_root    = excluded.source_root,
+           link_type      = excluded.link_type,
+           symlink_target = excluded.symlink_target,
+           is_read_only   = excluded.is_read_only,
+           scanned_at     = excluded.scanned_at",
+    )
+    .bind(&observation.row_id)
+    .bind(&observation.agent_id)
+    .bind(&observation.skill_id)
+    .bind(&observation.name)
+    .bind(&observation.description)
+    .bind(&observation.file_path)
+    .bind(&observation.dir_path)
+    .bind(&observation.source_kind)
+    .bind(&observation.source_root)
+    .bind(&observation.link_type)
+    .bind(&observation.symlink_target)
+    .bind(observation.is_read_only)
+    .bind(&observation.scanned_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub async fn get_agent_skill_observations(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<Vec<AgentSkillObservation>, String> {
+    sqlx::query_as::<_, AgentSkillObservation>(
+        "SELECT * FROM agent_skill_observations
+         WHERE agent_id = ?
+         ORDER BY name, dir_path",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -1054,6 +1193,37 @@ pub async fn delete_stale_skill_installations(
     let mut q = sqlx::query(&sql).bind(agent_id);
     for id in found_skill_ids {
         q = q.bind(id.as_str());
+    }
+    q.execute(pool).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+pub async fn delete_stale_agent_skill_observations(
+    pool: &DbPool,
+    agent_id: &str,
+    found_row_ids: &[String],
+) -> Result<(), String> {
+    if found_row_ids.is_empty() {
+        return sqlx::query("DELETE FROM agent_skill_observations WHERE agent_id = ?")
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+
+    let placeholders = found_row_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM agent_skill_observations WHERE agent_id = ? AND row_id NOT IN ({})",
+        placeholders
+    );
+
+    let mut q = sqlx::query(&sql).bind(agent_id);
+    for row_id in found_row_ids {
+        q = q.bind(row_id.as_str());
     }
     q.execute(pool).await.map(|_| ()).map_err(|e| e.to_string())
 }
@@ -1364,7 +1534,10 @@ pub async fn get_collection_skills(
 }
 
 /// Retrieve all collections that contain a given skill.
-pub async fn get_skill_collections(pool: &DbPool, skill_id: &str) -> Result<Vec<Collection>, String> {
+pub async fn get_skill_collections(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<Vec<Collection>, String> {
     sqlx::query_as::<_, Collection>(
         "SELECT c.* FROM collections c
          JOIN collection_skills cs ON c.id = cs.collection_id
@@ -1602,10 +1775,11 @@ mod tests {
     async fn test_init_creates_all_tables() {
         let pool = setup_test_db().await;
 
-        // Verify all 7 tables exist by counting rows (empty is fine)
+        // Verify all core tables exist by counting rows (empty is fine)
         let tables = [
             "skills",
             "skill_installations",
+            "agent_skill_observations",
             "agents",
             "collections",
             "collection_skills",

@@ -209,7 +209,7 @@ fn open_in_file_manager_impl(path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{self, Skill, SkillInstallation};
+    use crate::db::{self, AgentSkillObservation, Skill, SkillInstallation};
     use chrono::Utc;
     use sqlx::SqlitePool;
     use std::fs;
@@ -239,6 +239,35 @@ mod tests {
                 Some("copy".to_string())
             },
             content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    fn make_observation(
+        row_id: &str,
+        skill_id: &str,
+        name: &str,
+        dir_path: &str,
+        source_kind: &str,
+        read_only: bool,
+    ) -> AgentSkillObservation {
+        AgentSkillObservation {
+            row_id: row_id.to_string(),
+            agent_id: "claude-code".to_string(),
+            skill_id: skill_id.to_string(),
+            name: name.to_string(),
+            description: Some(format!("{source_kind} copy")),
+            file_path: format!("{dir_path}/SKILL.md"),
+            dir_path: dir_path.to_string(),
+            source_kind: source_kind.to_string(),
+            source_root: if source_kind == "user" {
+                "/tmp/.claude/skills".to_string()
+            } else {
+                "/tmp/.claude/plugins/marketplaces/market-a".to_string()
+            },
+            link_type: "copy".to_string(),
+            symlink_target: None,
+            is_read_only: read_only,
             scanned_at: Utc::now().to_rfc3339(),
         }
     }
@@ -328,6 +357,34 @@ mod tests {
         assert!(
             skills_with_links[0].linked_agents.is_empty(),
             "no links when no installations"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_central_skills_ignores_claude_marketplace_observations() {
+        let pool = setup_test_db().await;
+
+        let central_skill = make_skill("shared-skill", "Shared Skill", true);
+        db::upsert_skill(&pool, &central_skill).await.unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation(
+                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "marketplace",
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let skills_with_links = get_central_skills_impl(&pool).await.unwrap();
+        assert_eq!(skills_with_links.len(), 1);
+        assert!(
+            skills_with_links[0].linked_agents.is_empty(),
+            "marketplace observations must not pollute linked_agents state"
         );
     }
 
@@ -591,6 +648,52 @@ mod tests {
             skills.is_empty(),
             "no skills for an agent with no installations"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_skills_by_agent_impl_claude_uses_observations_for_duplicate_rows() {
+        let pool = setup_test_db().await;
+
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation(
+                "claude-code::/tmp/.claude/skills/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.claude/skills/shared-skill",
+                "user",
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation(
+                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "marketplace",
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let mut skills = get_skills_by_agent_impl(&pool, "claude-code")
+            .await
+            .unwrap();
+        skills.sort_by(|a, b| a.dir_path.cmp(&b.dir_path));
+
+        assert_eq!(
+            skills.len(),
+            2,
+            "Claude queries should surface duplicate logical skills from different sources"
+        );
+        assert_eq!(skills[0].id, "shared-skill");
+        assert_eq!(skills[1].id, "shared-skill");
+        assert_ne!(skills[0].dir_path, skills[1].dir_path);
     }
 
     #[tokio::test]

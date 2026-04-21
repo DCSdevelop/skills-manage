@@ -5,7 +5,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::{self, DbPool, Skill, SkillInstallation};
+use crate::db::{self, AgentSkillObservation, DbPool, Skill, SkillInstallation};
 use crate::AppState;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -41,6 +41,31 @@ pub struct ScanResult {
     pub total_skills: usize,
     pub agents_scanned: usize,
     pub skills_by_agent: HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeSourceKind {
+    User,
+    Marketplace,
+}
+
+impl ClaudeSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Marketplace => "marketplace",
+        }
+    }
+
+    fn is_read_only(self) -> bool {
+        matches!(self, Self::Marketplace)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AgentScanRoot {
+    path: PathBuf,
+    claude_source: Option<ClaudeSourceKind>,
 }
 
 // ─── Core Functions ───────────────────────────────────────────────────────────
@@ -181,15 +206,32 @@ fn claude_marketplace_roots(global_skills_dir: &Path) -> Vec<PathBuf> {
     roots
 }
 
-fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<PathBuf> {
+fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
     let primary_root = PathBuf::from(&agent.global_skills_dir);
     if agent.id != "claude-code" {
-        return vec![primary_root];
+        return vec![AgentScanRoot {
+            path: primary_root,
+            claude_source: None,
+        }];
     }
 
-    let mut roots = vec![primary_root.clone()];
-    roots.extend(claude_marketplace_roots(&primary_root));
+    let mut roots = vec![AgentScanRoot {
+        path: primary_root.clone(),
+        claude_source: Some(ClaudeSourceKind::User),
+    }];
+    roots.extend(
+        claude_marketplace_roots(&primary_root)
+            .into_iter()
+            .map(|path| AgentScanRoot {
+                path,
+                claude_source: Some(ClaudeSourceKind::Marketplace),
+            }),
+    );
     roots
+}
+
+fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
+    format!("{agent_id}::{dir_path}")
 }
 
 // ─── Tauri Command ────────────────────────────────────────────────────────────
@@ -211,9 +253,9 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     for agent in &agents {
         let is_central = agent.category == "central";
         let scan_roots = scan_roots_for_agent(agent);
-        let existing_roots: Vec<PathBuf> = scan_roots
+        let existing_roots: Vec<AgentScanRoot> = scan_roots
             .into_iter()
-            .filter(|dir| dir.exists())
+            .filter(|root| root.path.exists())
             .collect();
 
         if existing_roots.is_empty() {
@@ -222,53 +264,90 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             skills_by_agent.insert(agent.id.clone(), 0);
             // Remove every installation row for this agent — the directory is gone.
             let _ = db::delete_stale_skill_installations(pool, &agent.id, &[]).await;
+            if agent.id == "claude-code" {
+                let _ = db::delete_stale_agent_skill_observations(pool, &agent.id, &[]).await;
+            }
             continue;
         }
 
         let _ = db::update_agent_detected(pool, &agent.id, true).await;
         let mut scanned = Vec::new();
-        for dir in &existing_roots {
-            scanned.extend(scan_directory(dir, is_central));
-        }
+        let mut found_install_ids = Vec::new();
+        let mut found_observation_row_ids = Vec::new();
 
-        let found_ids: Vec<String> = scanned.iter().map(|s| s.id.clone()).collect();
+        for root in &existing_roots {
+            let root_path = root.path.to_string_lossy().into_owned();
+            let root_scanned = scan_directory(&root.path, is_central);
 
-        for skill in &scanned {
-            all_found_skill_ids.insert(skill.id.clone());
-            let now = Utc::now().to_rfc3339();
+            for skill in &root_scanned {
+                let now = Utc::now().to_rfc3339();
 
-            let db_skill = Skill {
-                id: skill.id.clone(),
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-                file_path: skill.file_path.clone(),
-                canonical_path: if is_central {
-                    Some(skill.dir_path.clone())
-                } else {
-                    None
-                },
-                is_central,
-                source: Some(skill.link_type.clone()),
-                content: None,
-                scanned_at: now.clone(),
-            };
-            db::upsert_skill(pool, &db_skill).await?;
+                if let Some(source_kind) = root.claude_source {
+                    let observation = AgentSkillObservation {
+                        row_id: claude_observation_row_id(&agent.id, &skill.dir_path),
+                        agent_id: agent.id.clone(),
+                        skill_id: skill.id.clone(),
+                        name: skill.name.clone(),
+                        description: skill.description.clone(),
+                        file_path: skill.file_path.clone(),
+                        dir_path: skill.dir_path.clone(),
+                        source_kind: source_kind.as_str().to_string(),
+                        source_root: root_path.clone(),
+                        link_type: skill.link_type.clone(),
+                        symlink_target: skill.symlink_target.clone(),
+                        is_read_only: source_kind.is_read_only(),
+                        scanned_at: now.clone(),
+                    };
+                    db::upsert_agent_skill_observation(pool, &observation).await?;
+                    found_observation_row_ids.push(observation.row_id);
+                }
 
-            // Bug fix: store the skill *directory* path, not the SKILL.md file path.
-            let installation = SkillInstallation {
-                skill_id: skill.id.clone(),
-                agent_id: agent.id.clone(),
-                installed_path: skill.dir_path.clone(),
-                link_type: skill.link_type.clone(),
-                symlink_target: skill.symlink_target.clone(),
-                created_at: now.clone(),
-            };
-            db::upsert_skill_installation(pool, &installation).await?;
+                let should_persist_manageable_state =
+                    root.claude_source != Some(ClaudeSourceKind::Marketplace);
+                if should_persist_manageable_state {
+                    all_found_skill_ids.insert(skill.id.clone());
+                    found_install_ids.push(skill.id.clone());
+
+                    let db_skill = Skill {
+                        id: skill.id.clone(),
+                        name: skill.name.clone(),
+                        description: skill.description.clone(),
+                        file_path: skill.file_path.clone(),
+                        canonical_path: if is_central {
+                            Some(skill.dir_path.clone())
+                        } else {
+                            None
+                        },
+                        is_central,
+                        source: Some(skill.link_type.clone()),
+                        content: None,
+                        scanned_at: now.clone(),
+                    };
+                    db::upsert_skill(pool, &db_skill).await?;
+
+                    // Bug fix: store the skill *directory* path, not the SKILL.md file path.
+                    let installation = SkillInstallation {
+                        skill_id: skill.id.clone(),
+                        agent_id: agent.id.clone(),
+                        installed_path: skill.dir_path.clone(),
+                        link_type: skill.link_type.clone(),
+                        symlink_target: skill.symlink_target.clone(),
+                        created_at: now.clone(),
+                    };
+                    db::upsert_skill_installation(pool, &installation).await?;
+                }
+            }
+
+            scanned.extend(root_scanned);
         }
 
         // Reconciliation: remove installation rows for skills no longer present
         // in this agent's directory.
-        db::delete_stale_skill_installations(pool, &agent.id, &found_ids).await?;
+        db::delete_stale_skill_installations(pool, &agent.id, &found_install_ids).await?;
+        if agent.id == "claude-code" {
+            db::delete_stale_agent_skill_observations(pool, &agent.id, &found_observation_row_ids)
+                .await?;
+        }
 
         let count = scanned.len();
         total_skills += count;
@@ -913,22 +992,116 @@ mod tests {
         let ids: Vec<&str> = skills.iter().map(|skill| skill.id.as_str()).collect();
         assert_eq!(ids, vec!["market-a-skill", "market-b-skill", "user-skill"]);
 
-        let market_a_installations = db::get_skill_installations(&pool, "market-a-skill")
+        let observations = db::get_agent_skill_observations(&pool, "claude-code")
             .await
             .unwrap();
-        assert_eq!(market_a_installations.len(), 1);
+        assert_eq!(observations.len(), 3);
+
+        let market_a_rows: Vec<_> = observations
+            .iter()
+            .filter(|row| row.skill_id == "market-a-skill")
+            .collect();
+        assert_eq!(market_a_rows.len(), 1);
+        assert_eq!(market_a_rows[0].source_kind, "marketplace");
         assert_eq!(
-            market_a_installations[0].installed_path,
+            market_a_rows[0].dir_path,
             market_a_root.join("market-a-skill").to_string_lossy()
         );
 
-        let market_b_installations = db::get_skill_installations(&pool, "market-b-skill")
+        let market_b_rows: Vec<_> = observations
+            .iter()
+            .filter(|row| row.skill_id == "market-b-skill")
+            .collect();
+        assert_eq!(market_b_rows.len(), 1);
+        assert_eq!(market_b_rows[0].source_kind, "marketplace");
+        assert_eq!(
+            market_b_rows[0].dir_path,
+            market_b_root.join("market-b-skill").to_string_lossy()
+        );
+
+        let market_a_installations = db::get_skill_installations(&pool, "market-a-skill")
             .await
             .unwrap();
-        assert_eq!(market_b_installations.len(), 1);
+        assert!(
+            market_a_installations.is_empty(),
+            "marketplace rows should not create install-state records"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_claude_duplicate_rows_stay_distinct_without_install_pollution(
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id != 'claude-code'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claude_root = tmp.path().join(".claude");
+        let user_root = claude_root.join("skills");
+        let marketplace_root = claude_root.join("plugins/marketplaces/market-a");
+        fs::create_dir_all(&user_root).unwrap();
+        fs::create_dir_all(&marketplace_root).unwrap();
+
+        create_skill_dir(
+            &user_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "User copy"),
+        );
+        create_skill_dir(
+            &marketplace_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Marketplace copy"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(user_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let rows = db::get_agent_skill_observations(&pool, "claude-code")
+            .await
+            .unwrap();
+        let shared_rows: Vec<_> = rows
+            .iter()
+            .filter(|row| row.skill_id == "shared-skill")
+            .collect();
         assert_eq!(
-            market_b_installations[0].installed_path,
-            market_b_root.join("market-b-skill").to_string_lossy()
+            shared_rows.len(),
+            2,
+            "user and marketplace copies should remain distinct observation rows"
+        );
+        assert_ne!(shared_rows[0].row_id, shared_rows[1].row_id);
+
+        let installs = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap();
+        assert_eq!(
+            installs.len(),
+            1,
+            "only the user copy should remain manageable"
+        );
+        assert_eq!(
+            installs[0].installed_path,
+            user_root.join("shared-skill").to_string_lossy()
+        );
+
+        let stored_skill = db::get_skill_by_id(&pool, "shared-skill")
+            .await
+            .unwrap()
+            .expect("user copy should still back the logical skill row");
+        assert_eq!(
+            stored_skill.file_path,
+            user_root.join("shared-skill/SKILL.md").to_string_lossy()
         );
     }
 
@@ -1099,6 +1272,130 @@ mod tests {
 
         let result = scan_all_skills_impl(&pool).await.unwrap();
         assert_eq!(result.skills_by_agent.get("claude-code").copied(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_claude_rescan_drops_stale_marketplace_duplicate_only() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id != 'claude-code'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claude_root = tmp.path().join(".claude");
+        let user_root = claude_root.join("skills");
+        let marketplace_root = claude_root.join("plugins/marketplaces/market-a");
+        fs::create_dir_all(&user_root).unwrap();
+        fs::create_dir_all(&marketplace_root).unwrap();
+
+        let marketplace_skill_dir = create_skill_dir(
+            &marketplace_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Marketplace copy"),
+        );
+        create_skill_dir(
+            &user_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "User copy"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(user_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+        fs::remove_dir_all(&marketplace_skill_dir).unwrap();
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let rows = db::get_agent_skill_observations(&pool, "claude-code")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "only the user observation should remain");
+        assert_eq!(rows[0].source_kind, "user");
+
+        let installs = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap();
+        assert_eq!(
+            installs.len(),
+            1,
+            "user install state should survive marketplace cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_claude_marketplace_survives_when_user_duplicate_is_removed()
+    {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id != 'claude-code'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claude_root = tmp.path().join(".claude");
+        let user_root = claude_root.join("skills");
+        let marketplace_root = claude_root.join("plugins/marketplaces/market-a");
+        fs::create_dir_all(&user_root).unwrap();
+        fs::create_dir_all(&marketplace_root).unwrap();
+
+        let user_skill_dir = create_skill_dir(
+            &user_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "User copy"),
+        );
+        create_skill_dir(
+            &marketplace_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Marketplace copy"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(user_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+        fs::remove_dir_all(&user_skill_dir).unwrap();
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let rows = db::get_agent_skill_observations(&pool, "claude-code")
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "marketplace observation should survive even after the user duplicate disappears"
+        );
+        assert_eq!(rows[0].source_kind, "marketplace");
+
+        let installs = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap();
+        assert!(
+            installs.is_empty(),
+            "marketplace observations must not keep stale Claude install-state rows alive"
+        );
+
+        let skill = db::get_skill_by_id(&pool, "shared-skill").await.unwrap();
+        assert!(
+            skill.is_none(),
+            "marketplace observations should not keep a stale manageable skill row alive"
+        );
     }
 
     // ── Regression: Bug 1 — installed_path must be the skill directory ────────
