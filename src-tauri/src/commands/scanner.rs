@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -162,6 +162,36 @@ pub fn scan_directory(dir: &Path, is_central: bool) -> Vec<ScannedSkill> {
     skills
 }
 
+fn claude_marketplace_roots(global_skills_dir: &Path) -> Vec<PathBuf> {
+    let Some(claude_root) = global_skills_dir.parent() else {
+        return Vec::new();
+    };
+
+    let marketplaces_dir = claude_root.join("plugins/marketplaces");
+    let Ok(entries) = std::fs::read_dir(&marketplaces_dir) else {
+        return Vec::new();
+    };
+
+    let mut roots: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    roots.sort();
+    roots
+}
+
+fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<PathBuf> {
+    let primary_root = PathBuf::from(&agent.global_skills_dir);
+    if agent.id != "claude-code" {
+        return vec![primary_root];
+    }
+
+    let mut roots = vec![primary_root.clone()];
+    roots.extend(claude_marketplace_roots(&primary_root));
+    roots
+}
+
 // ─── Tauri Command ────────────────────────────────────────────────────────────
 
 /// Core scanning logic, separated from the Tauri command layer so it can be
@@ -179,10 +209,14 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
 
     // ── Per-agent scans ───────────────────────────────────────────────────────
     for agent in &agents {
-        let dir = Path::new(&agent.global_skills_dir);
         let is_central = agent.category == "central";
+        let scan_roots = scan_roots_for_agent(agent);
+        let existing_roots: Vec<PathBuf> = scan_roots
+            .into_iter()
+            .filter(|dir| dir.exists())
+            .collect();
 
-        if !dir.exists() {
+        if existing_roots.is_empty() {
             // Mark agent as not detected and record zero count.
             let _ = db::update_agent_detected(pool, &agent.id, false).await;
             skills_by_agent.insert(agent.id.clone(), 0);
@@ -192,7 +226,10 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         }
 
         let _ = db::update_agent_detected(pool, &agent.id, true).await;
-        let scanned = scan_directory(dir, is_central);
+        let mut scanned = Vec::new();
+        for dir in &existing_roots {
+            scanned.extend(scan_directory(dir, is_central));
+        }
 
         let found_ids: Vec<String> = scanned.iter().map(|s| s.id.clone()).collect();
 
@@ -819,6 +856,249 @@ mod tests {
 
         assert_eq!(result.skills_by_agent.get("agent-a").copied(), Some(2));
         assert_eq!(result.skills_by_agent.get("agent-b").copied(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_claude_scans_user_and_multiple_marketplace_roots() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id != 'claude-code'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claude_root = tmp.path().join(".claude");
+        let user_root = claude_root.join("skills");
+        let marketplace_root = claude_root.join("plugins/marketplaces");
+        let market_a_root = marketplace_root.join("market-a");
+        let market_b_root = marketplace_root.join("market-b");
+
+        fs::create_dir_all(&user_root).unwrap();
+        fs::create_dir_all(&market_a_root).unwrap();
+        fs::create_dir_all(&market_b_root).unwrap();
+
+        create_skill_dir(
+            &user_root,
+            "user-skill",
+            &valid_skill_md("User Skill", "From ~/.claude/skills"),
+        );
+        create_skill_dir(
+            &market_a_root,
+            "market-a-skill",
+            &valid_skill_md("Market A Skill", "From marketplace A"),
+        );
+        create_skill_dir(
+            &market_b_root,
+            "market-b-skill",
+            &valid_skill_md("Market B Skill", "From marketplace B"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(user_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(result.agents_scanned, 1);
+        assert_eq!(result.skills_by_agent.get("claude-code").copied(), Some(3));
+
+        let mut skills = db::get_skills_by_agent(&pool, "claude-code").await.unwrap();
+        skills.sort_by(|a, b| a.id.cmp(&b.id));
+        let ids: Vec<&str> = skills.iter().map(|skill| skill.id.as_str()).collect();
+        assert_eq!(ids, vec!["market-a-skill", "market-b-skill", "user-skill"]);
+
+        let market_a_installations = db::get_skill_installations(&pool, "market-a-skill")
+            .await
+            .unwrap();
+        assert_eq!(market_a_installations.len(), 1);
+        assert_eq!(
+            market_a_installations[0].installed_path,
+            market_a_root.join("market-a-skill").to_string_lossy()
+        );
+
+        let market_b_installations = db::get_skill_installations(&pool, "market-b-skill")
+            .await
+            .unwrap();
+        assert_eq!(market_b_installations.len(), 1);
+        assert_eq!(
+            market_b_installations[0].installed_path,
+            market_b_root.join("market-b-skill").to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_claude_scans_marketplaces_even_without_user_root() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id != 'claude-code'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claude_root = tmp.path().join(".claude");
+        let user_root = claude_root.join("skills");
+        let marketplace_root = claude_root.join("plugins/marketplaces");
+        let market_a_root = marketplace_root.join("market-a");
+        let market_b_root = marketplace_root.join("market-b");
+
+        fs::create_dir_all(&market_a_root).unwrap();
+        fs::create_dir_all(&market_b_root).unwrap();
+
+        create_skill_dir(
+            &market_a_root,
+            "market-a-skill",
+            &valid_skill_md("Market A Skill", "From marketplace A"),
+        );
+        create_skill_dir(
+            &market_b_root,
+            "market-b-skill",
+            &valid_skill_md("Market B Skill", "From marketplace B"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(user_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(result.skills_by_agent.get("claude-code").copied(), Some(2));
+
+        let detected = db::get_agent_by_id(&pool, "claude-code")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            detected.is_detected,
+            "claude-code should remain detected when only marketplace roots exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_non_claude_agents_ignore_claude_marketplaces() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claude_like_root = tmp.path().join(".claude");
+        let user_root = claude_like_root.join("skills");
+        let marketplace_root = claude_like_root.join("plugins/marketplaces");
+        let market_a_root = marketplace_root.join("market-a");
+        let market_b_root = marketplace_root.join("market-b");
+
+        fs::create_dir_all(&user_root).unwrap();
+        fs::create_dir_all(&market_a_root).unwrap();
+        fs::create_dir_all(&market_b_root).unwrap();
+
+        create_skill_dir(
+            &user_root,
+            "user-skill",
+            &valid_skill_md("User Skill", "From primary root"),
+        );
+        create_skill_dir(
+            &market_a_root,
+            "market-a-skill",
+            &valid_skill_md("Market A Skill", "From marketplace A"),
+        );
+        create_skill_dir(
+            &market_b_root,
+            "market-b-skill",
+            &valid_skill_md("Market B Skill", "From marketplace B"),
+        );
+
+        let agent = db::Agent {
+            id: "not-claude".to_string(),
+            display_name: "Not Claude".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: user_root.to_string_lossy().to_string(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &agent).await.unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(result.agents_scanned, 1);
+        assert_eq!(result.skills_by_agent.get("not-claude").copied(), Some(1));
+
+        let skills = db::get_skills_by_agent(&pool, "not-claude").await.unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "user-skill");
+    }
+
+    #[tokio::test]
+    #[ignore = "manual isolated-home sanity check"]
+    async fn test_scan_all_skills_impl_claude_fixture_home_sanity() {
+        let fixture_home = Path::new("/tmp/skills-manage-test-fixtures/claude-multi-source");
+        if fixture_home.exists() {
+            fs::remove_dir_all(fixture_home).unwrap();
+        }
+        fs::create_dir_all(fixture_home).unwrap();
+
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id != 'claude-code'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let user_root = fixture_home.join(".claude/skills");
+        let market_a_root = fixture_home.join(".claude/plugins/marketplaces/market-a");
+        let market_b_root = fixture_home.join(".claude/plugins/marketplaces/market-b");
+
+        fs::create_dir_all(&user_root).unwrap();
+        fs::create_dir_all(&market_a_root).unwrap();
+        fs::create_dir_all(&market_b_root).unwrap();
+
+        create_skill_dir(
+            &user_root,
+            "fixture-user-skill",
+            &valid_skill_md("Fixture User Skill", "From fixture user root"),
+        );
+        create_skill_dir(
+            &market_a_root,
+            "fixture-market-a-skill",
+            &valid_skill_md("Fixture Market A Skill", "From fixture marketplace A"),
+        );
+        create_skill_dir(
+            &market_b_root,
+            "fixture-market-b-skill",
+            &valid_skill_md("Fixture Market B Skill", "From fixture marketplace B"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(user_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(result.skills_by_agent.get("claude-code").copied(), Some(3));
     }
 
     // ── Regression: Bug 1 — installed_path must be the skill directory ────────
