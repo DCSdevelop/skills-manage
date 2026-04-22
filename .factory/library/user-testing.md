@@ -76,3 +76,20 @@ For contract assertions on the native Tauri surface, capture:
 - Use repeated-skill fixtures when validating duplicate-source behavior; distinct-name fixtures are insufficient
 - For backend/frontend compatibility fixes that unblock scrutiny before the full Claude UX lands, a native launch/count smoke check is acceptable for that fix feature; the full duplicate-row click-through remains owned by later Claude UX features and final user-testing validation.
 - For command-palette or global-search flows, prefer validating the underlying state transition with targeted tests first; native Tauri evidence may use launch/screenshot confirmation plus documented macOS accessibility limits when the command-palette surface is not reliably scriptable.
+
+## Native macOS Tauri Recipe
+
+- Launch the real app with `HOME=/tmp/skills-manage-test-fixtures/claude-multi-source pnpm tauri dev`.
+- Wait for `curl -sf http://localhost:24200` before attempting native inspection.
+- Prefer macOS `screencapture` against the real app window for screenshots; prior runs found Quartz window capture can skew this Tauri webview.
+- For interaction and inspection, prefer PyObjC `ApplicationServices` / `AXUIElement` helpers over plain `System Events`; prior Claude and platform validations found AXUIElement markedly more reliable for sidebar/detail clicks.
+- If the native window renders but does not expose actionable AX children, capture screenshots plus any OCR/SQLite evidence and record the assertion as blocked instead of guessing.
+
+## Flow Validator Guidance: manual-tauri
+
+- Surface: the native `skills-manage` Tauri window only. Do not treat the plain browser preview as authoritative proof for this milestone.
+- Isolation: use `HOME=/tmp/skills-manage-test-fixtures/claude-multi-source` and keep validation scoped to that fixture unless a final real-home spot check is explicitly called for.
+- Concurrency: run only one native manual-tauri validator at a time. The shared app window, AX state, and fixture HOME are not safe for parallel mutation.
+- Allowed fixture mutation: user-source fixture paths under `/tmp/skills-manage-test-fixtures/claude-multi-source/.claude/skills` may be changed for rescan assertions and then restored if needed. Never modify any real-home Claude marketplace directory.
+- Off-limits: do not broaden coverage into Discover or Claude cache roots, and do not create any management action for marketplace rows.
+- Evidence: capture screenshots for list/detail/rescan states and pair them with concise notes about source badges, rooted paths, read-only treatment, and whether management controls are absent or still enabled on the user-source sibling row.
