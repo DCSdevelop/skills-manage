@@ -125,14 +125,12 @@ jobs:
           mkdir -p release-assets
 
           APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name "*.app" | head -1 || true)
-          APP_ZIP=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type f -name "*.app.zip" | head -1 || true)
           DMG_PATH=$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -type f -name "*.dmg" | head -1 || true)
 
           [ -n "$APP_PATH" ] || { echo "macOS .app bundle not found" >&2; exit 1; }
-          [ -n "$APP_ZIP" ] || { echo "macOS .app.zip bundle not found" >&2; exit 1; }
           [ -n "$DMG_PATH" ] || { echo "macOS .dmg bundle not found" >&2; exit 1; }
 
-          cp "$APP_ZIP" "release-assets/skills-manage_${VERSION}_macos_universal.zip"
+          ditto -c -k --keepParent "$APP_PATH" "release-assets/skills-manage_${VERSION}_macos_universal.zip"
           cp "$DMG_PATH" "release-assets/skills-manage_${VERSION}_macos_universal.dmg"
           tar -C "$(dirname "$APP_PATH")" -czf "release-assets/skills-manage_${VERSION}_macos_universal.tar.gz" "$(basename "$APP_PATH")"
 
