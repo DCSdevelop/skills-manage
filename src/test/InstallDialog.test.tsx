@@ -42,6 +42,15 @@ const mockAgents: AgentWithStatus[] = [
     is_builtin: true,
     is_enabled: true,
   },
+  {
+    id: "obsidian",
+    display_name: "Obsidian",
+    category: "obsidian",
+    global_skills_dir: "~/Vault/.agents/skills/",
+    is_detected: true,
+    is_builtin: false,
+    is_enabled: true,
+  },
 ];
 
 const mockSkill: SkillWithLinks = {
@@ -107,6 +116,11 @@ describe("InstallDialog", () => {
   it("does not show 'central' agent checkbox", () => {
     renderDialog();
     expect(screen.queryByLabelText("Central Skills")).not.toBeInTheDocument();
+  });
+
+  it("does not show Obsidian as an install target", () => {
+    renderDialog();
+    expect(screen.queryByLabelText("Obsidian")).not.toBeInTheDocument();
   });
 
   it("shows 'already linked' badge for linked agents", () => {

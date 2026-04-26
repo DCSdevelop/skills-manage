@@ -27,6 +27,7 @@ import { useHotkey } from "@/hooks/useHotkey";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { formatPathForDisplay } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery, scoreSearchMatch } from "@/lib/search";
+import { isEnabledInstallTargetAgent } from "@/lib/agents";
 
 interface GlobalSearchDialogProps {
   open: boolean;
@@ -173,9 +174,7 @@ export function GlobalSearchDialog({
     }
 
     // Platform Views
-    const platformAgents = agents.filter(
-      (a) => a.id !== "central" && a.is_enabled
-    );
+    const platformAgents = agents.filter(isEnabledInstallTargetAgent);
     for (const agent of platformAgents) {
       const displayPath = formatPathForDisplay(agent.global_skills_dir);
       result.push({

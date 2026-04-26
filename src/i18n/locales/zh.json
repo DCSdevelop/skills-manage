@@ -365,6 +365,8 @@
     "scanRoots": "扫描根目录",
     "scanRootsDesc": "选择要扫描项目级技能的目录。",
     "lookingFor": "查找模式：",
+    "obsidianPatternsTitle": "Obsidian 仓库",
+    "obsidianPatternsDesc": "同时扫描仓库技能目录：",
     "startScan": "开始扫描",
     "scanning": "扫描中...",
     "progress": "{{percent}}% — 正在扫描 {{path}}",

@@ -19,6 +19,7 @@ import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type { AgentWithStatus, ClaudeSourceKind } from "@/types";
 import { cn } from "@/lib/utils";
+import { isInstallTargetAgent } from "@/lib/agents";
 
 // ─── Platform Toggle Icon (internal) ──────────────────────────────────────────
 
@@ -150,8 +151,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   );
 
   // Split agents by category for platform icons
-  const lobsterAgents = platformIcons?.agents.filter((a) => a.id !== "central" && a.category === "lobster") ?? [];
-  const codingAgents = platformIcons?.agents.filter((a) => a.id !== "central" && a.category !== "lobster") ?? [];
+  const lobsterAgents = platformIcons?.agents.filter((a) => isInstallTargetAgent(a) && a.category === "lobster") ?? [];
+  const codingAgents = platformIcons?.agents.filter((a) => isInstallTargetAgent(a) && a.category !== "lobster") ?? [];
 
   // ── Platform variant: clickable card style ──
   if (onClick && !hasActions && !hasCheckbox && !hasPlatformIcons) {

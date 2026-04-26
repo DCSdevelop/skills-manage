@@ -17,6 +17,7 @@ import { usePlatformStore } from "@/stores/platformStore";
 import { useCollectionStore } from "@/stores/collectionStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { cn } from "@/lib/utils";
+import { isEnabledInstallTargetAgent } from "@/lib/agents";
 import type { DiscoveredProject } from "@/types";
 
 const OBSIDIAN_PLATFORM_ID = "obsidian";
@@ -201,8 +202,7 @@ export function Sidebar() {
 
   const platformAgents = agents.filter(
     (a) =>
-      a.id !== "central" &&
-      a.is_enabled &&
+      isEnabledInstallTargetAgent(a) &&
       (showAllPlatforms || (skillsByAgent[a.id] ?? 0) > 0)
   );
   const lobsterAgents = platformAgents.filter((a) => a.category === "lobster");

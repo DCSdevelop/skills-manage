@@ -56,6 +56,39 @@ const mockDiscoveredProjects: DiscoveredProject[] = [
   },
 ];
 
+const mockObsidianProjects: DiscoveredProject[] = [
+  {
+    project_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money",
+    project_name: "make-money",
+    skills: [
+      {
+        id: "obsidian__make-money__zettel-helper",
+        name: "zettel-helper",
+        description: "Curate linked notes into reusable skills",
+        file_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.agents/skills/zettel-helper/SKILL.md",
+        dir_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.agents/skills/zettel-helper",
+        platform_id: "obsidian",
+        platform_name: "Obsidian",
+        project_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money",
+        project_name: "make-money",
+        is_already_central: false,
+      },
+      {
+        id: "obsidian__make-money__note-review",
+        name: "note-review",
+        description: "Review a vault note",
+        file_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.claude/skills/note-review/SKILL.md",
+        dir_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.claude/skills/note-review",
+        platform_id: "obsidian",
+        platform_name: "Obsidian",
+        project_path: "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money",
+        project_name: "make-money",
+        is_already_central: false,
+      },
+    ],
+  },
+];
+
 const mockImportResult: DiscoverImportResult = {
   skill_id: "deploy",
   target: "central",
@@ -373,6 +406,39 @@ describe("discoverStore", () => {
     expect(state.selectedSkillIds.has("claude-code__my-app__deploy")).toBe(false);
   });
 
+  it("updates Obsidian vault counts by removing an imported central skill and empty vault rows", async () => {
+    useDiscoverStore.setState({
+      discoveredProjects: mockObsidianProjects,
+      totalSkillsFound: 2,
+      selectedSkillIds: new Set(["obsidian__make-money__zettel-helper"]),
+    });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      skill_id: "zettel-helper",
+      target: "central",
+    });
+
+    await useDiscoverStore.getState().importToCentral("obsidian__make-money__zettel-helper");
+
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual([
+      expect.objectContaining({
+        project_name: "make-money",
+        skills: [expect.objectContaining({ id: "obsidian__make-money__note-review" })],
+      }),
+    ]);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(1);
+    expect(useDiscoverStore.getState().selectedSkillIds).toEqual(new Set());
+
+    vi.mocked(invoke).mockResolvedValueOnce({
+      skill_id: "note-review",
+      target: "central",
+    });
+
+    await useDiscoverStore.getState().importToCentral("obsidian__make-money__note-review");
+
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual([]);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(0);
+  });
+
   it("sets error when importToCentral fails", async () => {
     vi.mocked(invoke).mockRejectedValueOnce(new Error("import failed"));
 
@@ -397,6 +463,59 @@ describe("discoverStore", () => {
       discoveredSkillId: "claude-code__my-app__deploy",
       agentId: "claude-code",
     });
+  });
+
+  it("keeps Obsidian discovered rows after installing to a real platform", async () => {
+    useDiscoverStore.setState({
+      discoveredProjects: mockObsidianProjects,
+      totalSkillsFound: 2,
+    });
+    const platformResult: DiscoverImportResult = {
+      skill_id: "zettel-helper",
+      target: "claude-code",
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(platformResult);
+
+    await useDiscoverStore.getState().importToPlatform(
+      "obsidian__make-money__zettel-helper",
+      "claude-code"
+    );
+
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockObsidianProjects);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(2);
+  });
+
+  it("rejects Obsidian as a platform install target without invoking the backend", async () => {
+    useDiscoverStore.setState({ discoveredProjects: mockObsidianProjects });
+
+    await expect(
+      useDiscoverStore.getState().importToPlatform(
+        "obsidian__make-money__zettel-helper",
+        "obsidian"
+      )
+    ).rejects.toThrow(/Obsidian/);
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useDiscoverStore.getState().error).toContain("Obsidian");
+  });
+
+  it("refreshCounts replaces Obsidian vault counts with reconciled cached rows", async () => {
+    useDiscoverStore.setState({
+      discoveredProjects: mockObsidianProjects,
+      totalSkillsFound: 2,
+    });
+    const reconciledProjects: DiscoveredProject[] = [
+      {
+        ...mockObsidianProjects[0],
+        skills: [mockObsidianProjects[0].skills[1]],
+      },
+    ];
+    vi.mocked(invoke).mockResolvedValueOnce(reconciledProjects);
+
+    await useDiscoverStore.getState().refreshCounts();
+
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(reconciledProjects);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(1);
   });
 
   // ── clearResults ──────────────────────────────────────────────────────────

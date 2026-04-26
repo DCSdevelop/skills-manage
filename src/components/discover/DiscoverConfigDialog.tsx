@@ -15,6 +15,13 @@ import { useDiscoverStore } from "@/stores/discoverStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { ScanRoot } from "@/types";
 import { describeSkillsPattern } from "@/lib/path";
+import { isEnabledInstallTargetAgent } from "@/lib/agents";
+
+const OBSIDIAN_VAULT_PATTERNS = [
+  ".skills/<skill>/SKILL.md",
+  ".agents/skills/<skill>/SKILL.md",
+  ".claude/skills/<skill>/SKILL.md",
+];
 
 // ─── DiscoverConfigDialog ────────────────────────────────────────────────────
 
@@ -44,7 +51,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
 
   // Get platform skill directory patterns for display.
   const platformPatterns = agents
-    .filter((a) => a.id !== "central" && a.is_enabled)
+    .filter(isEnabledInstallTargetAgent)
     .map((a) => ({
       name: a.display_name,
       pattern: describeSkillsPattern(a.global_skills_dir),
@@ -122,6 +129,24 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
                   +{platformPatterns.length - 6}
                 </span>
               )}
+            </div>
+            <div className="mt-2 rounded-md bg-muted/40 px-2.5 py-2">
+              <p className="text-xs font-medium text-foreground">
+                {t("discover.obsidianPatternsTitle")}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {t("discover.obsidianPatternsDesc")}
+              </p>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {OBSIDIAN_VAULT_PATTERNS.map((pattern) => (
+                  <span
+                    key={pattern}
+                    className="text-xs px-2 py-0.5 rounded bg-background/70 text-muted-foreground font-mono ring-1 ring-border/60"
+                  >
+                    {pattern}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
 

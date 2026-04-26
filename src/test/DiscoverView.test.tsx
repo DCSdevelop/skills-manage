@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { DiscoverView } from "../pages/DiscoverView";
 import { DiscoveredProject, DiscoveredSkill, AgentWithStatus } from "../types";
 import { consumeScrollPosition } from "../lib/scrollRestoration";
 import * as scrollRestoration from "../lib/scrollRestoration";
+
+const mockInstallDialogProps = vi.hoisted(() => vi.fn());
 
 // Mock stores
 vi.mock("../stores/discoverStore", () => ({
@@ -17,24 +19,53 @@ vi.mock("../stores/platformStore", () => ({
 
 // Mock the InstallDialog (heavy component with sub-dependencies)
 vi.mock("../components/central/InstallDialog", () => ({
-  InstallDialog: () => <div data-testid="install-dialog">InstallDialog</div>,
+  InstallDialog: (props: {
+    open: boolean;
+    agents: Array<{ id: string; display_name: string }>;
+  }) => {
+    mockInstallDialogProps(props);
+    return props.open ? (
+      <div data-testid="install-dialog">
+        {props.agents.map((agent) => (
+          <span key={agent.id}>{agent.display_name}</span>
+        ))}
+      </div>
+    ) : null;
+  },
 }));
 
 vi.mock("../components/skill/SkillDetailDrawer", () => ({
   SkillDetailDrawer: ({
     open,
     skillId,
+    filePath,
+    discoverMetadata,
     onOpenChange,
     returnFocusRef,
   }: {
     open: boolean;
     skillId: string | null;
+    filePath?: string | null;
+    discoverMetadata?: {
+      platformName: string;
+      projectName: string;
+      filePath: string;
+      dirPath: string;
+    } | null;
     onOpenChange: (open: boolean) => void;
     returnFocusRef?: { current: HTMLElement | null };
   }) =>
     open ? (
       <div data-testid="skill-detail-drawer">
         <div>drawer-skill:{skillId}</div>
+        <div>drawer-file:{filePath ?? ""}</div>
+        {discoverMetadata && (
+          <>
+            <div>drawer-source:{discoverMetadata.platformName}</div>
+            <div>drawer-project:{discoverMetadata.projectName}</div>
+            <div>drawer-dir:{discoverMetadata.dirPath}</div>
+          </>
+        )}
         <button
           onClick={() => {
             onOpenChange(false);
@@ -206,6 +237,15 @@ const mockAgents: AgentWithStatus[] = [
     is_enabled: true,
   },
   {
+    id: "obsidian",
+    display_name: "Obsidian",
+    category: "obsidian",
+    global_skills_dir: "~/Vault/.agents/skills/",
+    is_detected: true,
+    is_builtin: false,
+    is_enabled: true,
+  },
+  {
     id: "central",
     display_name: "Central Skills",
     category: "central",
@@ -213,6 +253,28 @@ const mockAgents: AgentWithStatus[] = [
     is_detected: true,
     is_builtin: true,
     is_enabled: true,
+  },
+];
+
+const obsidianVaultPath = "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money";
+const obsidianSkill: DiscoveredSkill = {
+  id: "obsidian__make-money__zettel-helper",
+  name: "zettel-helper",
+  description: "Curate linked notes into reusable skills",
+  file_path: `${obsidianVaultPath}/.agents/skills/zettel-helper/SKILL.md`,
+  dir_path: `${obsidianVaultPath}/.agents/skills/zettel-helper`,
+  platform_id: "obsidian",
+  platform_name: "Obsidian",
+  project_path: obsidianVaultPath,
+  project_name: "make-money",
+  is_already_central: false,
+};
+
+const obsidianProjects: DiscoveredProject[] = [
+  {
+    project_path: obsidianVaultPath,
+    project_name: "make-money",
+    skills: [obsidianSkill],
   },
 ];
 
@@ -297,6 +359,7 @@ function renderDiscoverView(initialPath = "/discover") {
 describe("DiscoverView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockInstallDialogProps.mockClear();
     mockUseDiscoverStore.mockImplementation((selector) => selector(buildDiscoverStoreState()));
     mockUsePlatformStore.mockImplementation((selector) => selector(buildPlatformStoreState()));
   });
@@ -521,6 +584,61 @@ describe("DiscoverView", () => {
     expect(screen.getAllByTitle("Install to Platform").length).toBeGreaterThan(0);
     expect(screen.getAllByTitle("Install to Central").length).toBe(1);
     expect(screen.getByText("Claude Code")).toBeInTheDocument();
+  });
+
+  it("reuses the Discover detail layout for an encoded Obsidian vault route", async () => {
+    mockUseDiscoverStore.mockImplementation((selector) =>
+      selector(
+        buildDiscoverStoreState({
+          discoveredProjects: obsidianProjects,
+          totalSkillsFound: 1,
+        })
+      )
+    );
+
+    renderDiscoverView(`/discover/${encodeURIComponent(obsidianVaultPath)}`);
+
+    expect(screen.getAllByText("make-money").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(obsidianVaultPath)).toBeInTheDocument();
+    expect(screen.getByText("zettel-helper")).toBeInTheDocument();
+    expect(screen.getByText("Curate linked notes into reusable skills")).toBeInTheDocument();
+    expect(screen.getByText("Obsidian")).toBeInTheDocument();
+    expect(screen.getByTitle("Install to Central")).toBeInTheDocument();
+    expect(screen.getByTitle("Install to Platform")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /view details for zettel-helper/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("skill-detail-drawer")).toBeInTheDocument();
+    });
+    expect(screen.getByText(`drawer-file:${obsidianSkill.file_path}`)).toBeInTheDocument();
+    expect(screen.getByText("drawer-source:Obsidian")).toBeInTheDocument();
+    expect(screen.getByText("drawer-project:make-money")).toBeInTheDocument();
+    expect(screen.getByText(`drawer-dir:${obsidianSkill.dir_path}`)).toBeInTheDocument();
+  });
+
+  it("excludes Obsidian from the install dialog targets for discovered vault skills", async () => {
+    mockUseDiscoverStore.mockImplementation((selector) =>
+      selector(
+        buildDiscoverStoreState({
+          discoveredProjects: obsidianProjects,
+          totalSkillsFound: 1,
+        })
+      )
+    );
+
+    renderDiscoverView(`/discover/${encodeURIComponent(obsidianVaultPath)}`);
+
+    fireEvent.click(screen.getByTitle("Install to Platform"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("install-dialog")).toBeInTheDocument();
+    });
+    const lastProps = mockInstallDialogProps.mock.calls.at(-1)?.[0];
+    expect(lastProps?.agents.map((agent: { id: string }) => agent.id)).toEqual(["claude-code"]);
+    const dialog = screen.getByTestId("install-dialog");
+    expect(within(dialog).getByText("Claude Code")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Obsidian")).not.toBeInTheDocument();
   });
 
   it("preserves selected project and right-panel scroll when closing the drawer and restores focus", async () => {

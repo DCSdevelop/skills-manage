@@ -33,6 +33,7 @@ import {
 } from "@/types";
 import { cn } from "@/lib/utils";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
+import { isInstallTargetAgent } from "@/lib/agents";
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 
@@ -559,7 +560,7 @@ export function SkillDetailView({
 
   // ── Derived values ───────────────────────────────────────────────────────
 
-  const targetAgents = agents.filter((a) => a.id !== "central");
+  const targetAgents = agents.filter(isInstallTargetAgent);
   const lobsterAgents = targetAgents.filter((a) => a.category === "lobster");
   const codingAgents = targetAgents.filter((a) => a.category !== "lobster");
 

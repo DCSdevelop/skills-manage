@@ -365,6 +365,8 @@
     "scanRoots": "Scan Roots",
     "scanRootsDesc": "Select directories to scan for project-level skills.",
     "lookingFor": "Looking for:",
+    "obsidianPatternsTitle": "Obsidian vaults",
+    "obsidianPatternsDesc": "Also scans vault skill folders:",
     "startScan": "Start Scan",
     "scanning": "Scanning...",
     "progress": "{{percent}}% — scanning {{path}}",

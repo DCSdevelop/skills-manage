@@ -10,6 +10,7 @@ import {
   DiscoverImportResult,
 } from "@/types";
 import { invoke, listen, isTauriRuntime } from "@/lib/tauri";
+import { OBSIDIAN_AGENT_ID } from "@/lib/agents";
 
 const BROWSER_FIXTURE_DISCOVERED_PROJECTS: DiscoveredProject[] = [
   {
@@ -385,6 +386,11 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
 
   importToPlatform: async (skillId: string, agentId: string) => {
     set({ error: null });
+    if (agentId === OBSIDIAN_AGENT_ID) {
+      const error = "Obsidian is a source-only Discover category and cannot be used as an install target.";
+      set({ error });
+      throw new Error(error);
+    }
     try {
       const result = await invoke<DiscoverImportResult>(
         "import_discovered_skill_to_platform",

@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AgentWithStatus, CollectionBatchInstallResult } from "@/types";
+import { isInstallTargetAgent } from "@/lib/agents";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ export function CollectionInstallDialog({
   onInstall,
 }: CollectionInstallDialogProps) {
   const { t } = useTranslation();
-  const targetAgents = agents.filter((a) => a.id !== "central");
+  const targetAgents = agents.filter(isInstallTargetAgent);
 
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);

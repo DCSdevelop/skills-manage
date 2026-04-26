@@ -22,6 +22,8 @@ vi.mock("react-i18next", () => ({
         "discover.scanRoots": "Scan Roots",
         "discover.scanRootsDesc": "Select directories to scan for project-level skills.",
         "discover.lookingFor": "Looking for:",
+        "discover.obsidianPatternsTitle": "Obsidian vaults",
+        "discover.obsidianPatternsDesc": "Also scans vault skill folders:",
         "discover.noRootsEnabled": "No scan roots enabled. Select at least one directory.",
         "discover.startScan": "Start Scan",
         "discover.scanning": "Scanning...",
@@ -61,6 +63,15 @@ const mockAgents: AgentWithStatus[] = [
     global_skills_dir: "/home/user/.agents/skills/",
     is_detected: true,
     is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "obsidian",
+    display_name: "Obsidian",
+    category: "obsidian",
+    global_skills_dir: "/home/user/Vault/.agents/skills/",
+    is_detected: true,
+    is_builtin: false,
     is_enabled: true,
   },
 ];
@@ -137,6 +148,33 @@ describe("DiscoverConfigDialog", () => {
   it("renders 'Looking for' section with platform patterns", () => {
     renderDialog();
     expect(screen.getByText("Looking for:")).toBeInTheDocument();
+  });
+
+  it("renders Obsidian vault skill patterns as always-visible scan hints", () => {
+    const manyAgents: AgentWithStatus[] = [
+      ...mockAgents,
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `extra-${index}`,
+        display_name: `Extra ${index}`,
+        category: "coding",
+        global_skills_dir: `/home/user/.extra-${index}/skills/`,
+        is_detected: true,
+        is_builtin: false,
+        is_enabled: true,
+      })),
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(usePlatformStore).mockImplementation((selector: any) =>
+      selector(buildPlatformStoreState({ agents: manyAgents }))
+    );
+
+    renderDialog();
+
+    expect(screen.getByText("Obsidian vaults")).toBeInTheDocument();
+    expect(screen.getByText("Also scans vault skill folders:")).toBeInTheDocument();
+    expect(screen.getByText(".skills/<skill>/SKILL.md")).toBeInTheDocument();
+    expect(screen.getByText(".agents/skills/<skill>/SKILL.md")).toBeInTheDocument();
+    expect(screen.getByText(".claude/skills/<skill>/SKILL.md")).toBeInTheDocument();
   });
 
   it("renders Cancel and Start Scan buttons", () => {
