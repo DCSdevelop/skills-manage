@@ -120,6 +120,39 @@ pub struct ImportResult {
 
 static SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
+std::thread_local! {
+    static SCAN_CANCEL_OVERRIDE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn set_scan_cancel_override(cancelled: bool) {
+    SCAN_CANCEL_OVERRIDE.with(|value| value.set(cancelled));
+}
+
+fn is_scan_cancelled() -> bool {
+    #[cfg(test)]
+    if SCAN_CANCEL_OVERRIDE.with(|value| value.get()) {
+        return true;
+    }
+
+    SCAN_CANCEL.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+type ScanTestHook = Box<dyn Fn(&Path) + Send + Sync + 'static>;
+
+#[cfg(test)]
+static SCAN_TEST_HOOK: std::sync::Mutex<Option<ScanTestHook>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn run_scan_test_hook(path: &Path) {
+    let hook = SCAN_TEST_HOOK.lock().unwrap();
+    if let Some(hook) = hook.as_ref() {
+        hook(path);
+    }
+}
+
 // ─── Default scan roots ───────────────────────────────────────────────────────
 
 /// Returns a list of candidate scan roots, checking which ones exist on disk.
@@ -534,8 +567,15 @@ fn scan_root_recursive(
     if depth > MAX_SCAN_DEPTH {
         return;
     }
-    if SCAN_CANCEL.load(Ordering::Relaxed) {
+    if is_scan_cancelled() {
         return;
+    }
+    #[cfg(test)]
+    {
+        run_scan_test_hook(current_dir);
+        if is_scan_cancelled() {
+            return;
+        }
     }
 
     let current_path_key = current_dir.to_string_lossy().into_owned();
@@ -566,7 +606,7 @@ fn scan_root_recursive(
     };
 
     for entry in entries.flatten() {
-        if SCAN_CANCEL.load(Ordering::Relaxed) {
+        if is_scan_cancelled() {
             break;
         }
 
@@ -685,9 +725,10 @@ where
     let mut total_skills = 0;
     let mut roots_scanned = 0;
     let mut seen_project_paths = HashSet::new();
+    let mut completed_roots: Vec<&ScanRoot> = Vec::new();
 
     for root in &enabled_roots {
-        if SCAN_CANCEL.load(Ordering::Relaxed) {
+        if is_scan_cancelled() {
             break;
         }
 
@@ -701,6 +742,11 @@ where
             &mut all_projects,
         );
         let found_projects: Vec<DiscoveredProject> = all_projects[before_project_count..].to_vec();
+        let root_completed = !is_scan_cancelled();
+
+        if root_completed {
+            completed_roots.push(*root);
+        }
 
         roots_scanned += 1;
         let percent = if total_roots > 0 {
@@ -723,6 +769,10 @@ where
             skills_found: total_skills,
             projects_found: all_projects.len(),
         }));
+
+        if is_scan_cancelled() {
+            break;
+        }
     }
 
     // Persist discovered skills to the database.
@@ -752,8 +802,10 @@ where
     }
 
     // ── Cache reconciliation ──────────────────────────────────────────────────
-    // Remove stale discovered_skills rows within the scanned scope.
-    reconcile_discovered_skills(pool, &enabled_roots, &found_skill_ids).await?;
+    // Remove stale discovered_skills rows only within roots that were fully
+    // traversed. Cancellation before a root, between roots, or during a root
+    // traversal must not purge cached rows for unvisited/incomplete scopes.
+    reconcile_discovered_skills(pool, &completed_roots, &found_skill_ids).await?;
 
     let total_projects = all_projects.len();
 
@@ -1125,6 +1177,8 @@ pub async fn clear_discovered_skills(state: State<'_, AppState>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static SCAN_CANCEL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[test]
     fn test_default_scan_roots_returns_candidates() {
@@ -2294,8 +2348,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_project_scan_sets_cancel_flag() {
+        let _cancel_guard = SCAN_CANCEL_TEST_LOCK.lock().await;
+
         // Before calling stop, the flag should be false.
-        SCAN_CANCEL.store(false, Ordering::Relaxed);
+        clear_scan_test_state();
         assert!(!SCAN_CANCEL.load(Ordering::Relaxed));
 
         // After calling stop, the flag should be true.
@@ -2303,7 +2359,7 @@ mod tests {
         assert!(SCAN_CANCEL.load(Ordering::Relaxed));
 
         // Reset for other tests.
-        SCAN_CANCEL.store(false, Ordering::Relaxed);
+        clear_scan_test_state();
     }
 
     #[tokio::test]
@@ -2558,6 +2614,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_cancellation_stops_early() {
+        let _cancel_guard = SCAN_CANCEL_TEST_LOCK.lock().await;
+        clear_scan_test_state();
+
         let tmp = tempfile::TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
         std::fs::create_dir_all(&central_dir).unwrap();
@@ -2584,7 +2643,7 @@ mod tests {
         )];
 
         // Set cancel flag before scanning.
-        SCAN_CANCEL.store(true, Ordering::Relaxed);
+        set_scan_cancel_override(true);
 
         let projects = scan_root_for_projects(tmp.path(), &patterns, &central_dir);
         assert!(
@@ -2593,7 +2652,7 @@ mod tests {
         );
 
         // Reset for other tests.
-        SCAN_CANCEL.store(false, Ordering::Relaxed);
+        clear_scan_test_state();
     }
 
     #[tokio::test]
@@ -3227,6 +3286,192 @@ mod tests {
         assert!(
             outside.is_some(),
             "stale skill outside scan scope should remain in DB"
+        );
+    }
+
+    async fn insert_cached_obsidian_row(
+        pool: &DbPool,
+        id: &str,
+        vault_dir: &Path,
+        skill_dir: &Path,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        db::insert_discovered_skill(
+            pool,
+            id,
+            "Cached Obsidian Skill",
+            Some("cached before cancellation"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &vault_dir.to_string_lossy(),
+            &file_name_or_unknown(vault_dir),
+            OBSIDIAN_PLATFORM_ID,
+            &now,
+        )
+        .await
+        .unwrap();
+    }
+
+    fn clear_scan_test_state() {
+        SCAN_CANCEL.store(false, Ordering::Relaxed);
+        set_scan_cancel_override(false);
+        let mut hook = SCAN_TEST_HOOK.lock().unwrap();
+        *hook = None;
+    }
+
+    #[tokio::test]
+    async fn test_cancel_before_first_root_skips_obsidian_reconciliation() {
+        let _cancel_guard = SCAN_CANCEL_TEST_LOCK.lock().await;
+        clear_scan_test_state();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_dir = tmp.path().join("vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let skill_dir = create_skill(
+            &vault_dir.join(".skills"),
+            "cached-skill",
+            "Cached Obsidian Skill",
+            "cached before cancellation",
+        );
+        insert_cached_obsidian_row(&pool, "cached-before-first-root", &vault_dir, &skill_dir).await;
+
+        set_scan_cancel_override(true);
+        let result = start_project_scan_impl(
+            &pool,
+            vec![scan_root(&vault_dir, true, true)],
+            &central_dir,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        clear_scan_test_state();
+
+        assert_eq!(result.total_projects, 0);
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "cached-before-first-root")
+                .await
+                .unwrap()
+                .is_some(),
+            "canceling before any enabled root is scanned must not purge cached Obsidian rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_between_roots_reconciles_only_completed_roots() {
+        let _cancel_guard = SCAN_CANCEL_TEST_LOCK.lock().await;
+        clear_scan_test_state();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let completed_vault = tmp.path().join("completed-vault");
+        let unvisited_vault = tmp.path().join("unvisited-vault");
+        std::fs::create_dir_all(completed_vault.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(unvisited_vault.join(".obsidian")).unwrap();
+
+        let completed_stale_dir = completed_vault.join(".skills/stale-completed");
+        let unvisited_stale_dir = unvisited_vault.join(".skills/stale-unvisited");
+        insert_cached_obsidian_row(
+            &pool,
+            "stale-completed-root",
+            &completed_vault,
+            &completed_stale_dir,
+        )
+        .await;
+        insert_cached_obsidian_row(
+            &pool,
+            "stale-unvisited-root",
+            &unvisited_vault,
+            &unvisited_stale_dir,
+        )
+        .await;
+
+        let completed_path = completed_vault.to_string_lossy().into_owned();
+        let result = start_project_scan_impl(
+            &pool,
+            vec![
+                scan_root(&completed_vault, true, true),
+                scan_root(&unvisited_vault, true, true),
+            ],
+            &central_dir,
+            |event| {
+                if let DiscoverEvent::Progress(payload) = event {
+                    if payload.current_path == completed_path {
+                        set_scan_cancel_override(true);
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        clear_scan_test_state();
+
+        assert_eq!(result.total_projects, 0);
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "stale-completed-root")
+                .await
+                .unwrap()
+                .is_none(),
+            "a fully completed root should still reconcile stale Obsidian rows"
+        );
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "stale-unvisited-root")
+                .await
+                .unwrap()
+                .is_some(),
+            "canceling between roots must preserve cached Obsidian rows under unvisited roots"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_during_root_traversal_skips_incomplete_root_reconciliation() {
+        let _cancel_guard = SCAN_CANCEL_TEST_LOCK.lock().await;
+        clear_scan_test_state();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let scan_root_dir = tmp.path().join("scan-root");
+        let vault_dir = scan_root_dir.join("cached-vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let stale_dir = vault_dir.join(".skills/stale-during-root");
+        insert_cached_obsidian_row(&pool, "stale-during-root", &vault_dir, &stale_dir).await;
+
+        let trigger_path = scan_root_dir.to_string_lossy().into_owned();
+        {
+            let mut hook = SCAN_TEST_HOOK.lock().unwrap();
+            *hook = Some(Box::new(move |path: &Path| {
+                if path.to_string_lossy() == trigger_path {
+                    set_scan_cancel_override(true);
+                }
+            }));
+        }
+
+        let result = start_project_scan_impl(
+            &pool,
+            vec![scan_root(&scan_root_dir, true, true)],
+            &central_dir,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        clear_scan_test_state();
+
+        assert_eq!(result.total_projects, 0);
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "stale-during-root")
+                .await
+                .unwrap()
+                .is_some(),
+            "canceling during root traversal must not purge rows in that incomplete root"
         );
     }
 
