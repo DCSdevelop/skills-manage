@@ -50,7 +50,7 @@
       "appimage": {
         "bundleMediaFramework": false,
         "files": {
-          "bundle/linux/com.iamzhihuix.skillsmanage.metainfo.xml": "usr/share/metainfo/com.iamzhihuix.skillsmanage.metainfo.xml"
+          "usr/share/metainfo/com.iamzhihuix.skillsmanage.metainfo.xml": "bundle/linux/com.iamzhihuix.skillsmanage.metainfo.xml"
         }
       },
       "deb": {
@@ -58,14 +58,14 @@
         "section": "devel",
         "priority": "optional",
         "files": {
-          "bundle/linux/com.iamzhihuix.skillsmanage.metainfo.xml": "/usr/share/metainfo/com.iamzhihuix.skillsmanage.metainfo.xml"
+          "/usr/share/metainfo/com.iamzhihuix.skillsmanage.metainfo.xml": "bundle/linux/com.iamzhihuix.skillsmanage.metainfo.xml"
         }
       },
       "rpm": {
         "desktopTemplate": "bundle/linux/skills-manage.desktop.hbs",
         "release": "1",
         "files": {
-          "bundle/linux/com.iamzhihuix.skillsmanage.metainfo.xml": "/usr/share/metainfo/com.iamzhihuix.skillsmanage.metainfo.xml"
+          "/usr/share/metainfo/com.iamzhihuix.skillsmanage.metainfo.xml": "bundle/linux/com.iamzhihuix.skillsmanage.metainfo.xml"
         }
       }
     },
