@@ -490,6 +490,42 @@ describe("SkillDetailView", () => {
     expect(toggleButtons).toHaveLength(2);
   });
 
+  it("top-aligns platform group labels when the icon grid wraps", () => {
+    const platformAgents: AgentWithStatus[] = [
+      {
+        id: "openclaw",
+        display_name: "OpenClaw",
+        category: "lobster",
+        global_skills_dir: "~/.openclaw/skills/",
+        is_detected: true,
+        is_builtin: true,
+        is_enabled: true,
+      },
+      ...mockAgents,
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: `coding-extra-${index}`,
+        display_name: `Coding Extra ${index}`,
+        category: "coding",
+        global_skills_dir: `~/.coding-extra-${index}/skills/`,
+        is_detected: true,
+        is_builtin: true,
+        is_enabled: true,
+      })),
+    ];
+
+    applyStoreMocks({}, { agents: platformAgents });
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    const installRegion = screen.getByRole("region", { name: /安装状态/i });
+    const codingLabel = within(installRegion).getByText("编程类");
+    const codingGroup = codingLabel.parentElement;
+    const codingIconGrid = codingLabel.nextElementSibling;
+
+    expect(codingGroup).toHaveClass("items-start");
+    expect(codingLabel).toHaveClass("h-6", "items-center");
+    expect(codingIconGrid).toHaveClass("min-w-0", "flex-1", "flex-wrap");
+  });
+
   it("shows platform name in tooltip on toggle icon", () => {
     renderView();
     // Claude Code is installed — tooltip includes linked status

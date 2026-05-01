@@ -24,7 +24,6 @@ import {
 import { AgentWithStatus, ScannedSkill, SkillWithLinks } from "@/types";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
-import { VirtualizedList } from "@/components/ui/virtualized-list";
 import { formatPathForDisplay } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 import { isTauriRuntime } from "@/lib/tauri";
@@ -454,35 +453,6 @@ export function CentralSkillsView() {
     await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
   }
 
-  function renderSearchResult(skill: SkillWithLinks) {
-    return (
-      <UnifiedSkillCard
-        key={skill.id}
-        name={skill.name}
-        description={skill.description}
-        onDetail={() => handleOpenDrawer(skill.id)}
-        onInstallTo={() => handleInstallClick(skill)}
-        onDeleteFromCentral={() => handleDeleteClick(skill)}
-        deleteFromCentralLabel={t("central.deleteFromCentralLabel", { name: skill.name })}
-        deleteFromCentralRequiresDialog={
-          skill.linked_agents.length > 0 || (skill.read_only_agents?.length ?? 0) > 0
-        }
-        isLoading={deletingSkillId === skill.id}
-        detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
-        className="h-[104px]"
-        platformIcons={{
-          agents,
-          linkedAgents: skill.linked_agents,
-          readOnlyAgents: skill.read_only_agents ?? [],
-          skillId: skill.id,
-          onToggle: handleTogglePlatform,
-          onManage: () => handleOpenPlatformDrawer(skill.id),
-          togglingAgentId,
-        }}
-      />
-    );
-  }
-
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -585,22 +555,6 @@ export function CentralSkillsView() {
           <FirstVisitEmptyState />
         ) : filteredSkills.length === 0 ? (
           <EmptyState message={t("central.noMatch", { query: searchQuery })} />
-        ) : isSearchActive ? (
-          sortedSkills.length > 60 ? (
-            <VirtualizedList
-              items={sortedSkills}
-              itemHeight={104}
-              itemGap={12}
-              overscan={8}
-              scrollContainerRef={contentRef}
-              itemKey={(skill) => skill.id}
-              renderItem={(skill) => renderSearchResult(skill)}
-            />
-          ) : (
-            <div className="space-y-3">
-              {sortedSkills.map((skill) => renderSearchResult(skill))}
-            </div>
-          )
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {sortedSkills.map((skill) => (

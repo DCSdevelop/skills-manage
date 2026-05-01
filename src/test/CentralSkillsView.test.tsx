@@ -511,6 +511,31 @@ describe("CentralSkillsView", () => {
     });
   });
 
+  it("keeps filtered search results in the central card grid", async () => {
+    renderCentralSkillsView();
+    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    fireEvent.change(searchInput, { target: { value: "frontend" } });
+
+    const resultButton = await screen.findByText("frontend-design");
+
+    let current: HTMLElement | null = resultButton;
+    let gridContainer: HTMLElement | null = null;
+    while (current) {
+      if (
+        current.classList.contains("grid") &&
+        current.classList.contains("grid-cols-1") &&
+        current.className.includes("lg:grid-cols-2") &&
+        current.classList.contains("gap-4")
+      ) {
+        gridContainer = current;
+        break;
+      }
+      current = current.parentElement;
+    }
+
+    expect(gridContainer).not.toBeNull();
+  });
+
   it("filters skills by description when searching", async () => {
     renderCentralSkillsView();
     const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);

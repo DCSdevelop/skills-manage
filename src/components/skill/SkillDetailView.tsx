@@ -150,6 +150,49 @@ function PlatformToggleIcon({
   );
 }
 
+interface PlatformToggleGroupProps {
+  label: string;
+  agents: AgentWithStatus[];
+  skillName: string;
+  installationMap: Map<string, SkillInstallation>;
+  readOnlyAgentIds: Set<string>;
+  installingAgentId: string | null;
+  onToggle: (agentId: string) => void;
+}
+
+function PlatformToggleGroup({
+  label,
+  agents,
+  skillName,
+  installationMap,
+  readOnlyAgentIds,
+  installingAgentId,
+  onToggle,
+}: PlatformToggleGroupProps) {
+  if (agents.length === 0) return null;
+
+  return (
+    <div className="flex items-start gap-1">
+      <span className="flex h-6 w-12 shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+        {label}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+        {agents.map((agent) => (
+          <PlatformToggleIcon
+            key={agent.id}
+            agent={agent}
+            skillName={skillName}
+            isInstalled={installationMap.has(agent.id) || readOnlyAgentIds.has(agent.id)}
+            isReadOnly={readOnlyAgentIds.has(agent.id)}
+            isLoading={installingAgentId === agent.id}
+            onToggle={() => onToggle(agent.id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Tab Toggle ───────────────────────────────────────────────────────────────
 
 type PreviewTab = "markdown" | "raw" | "explanation";
@@ -1123,46 +1166,24 @@ export function SkillDetailView({
                         </p>
                       ) : (
                         <>
-                          {lobsterAgents.length > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider w-12 shrink-0">
-                                {t("sidebar.categoryLobster")}
-                              </span>
-                              <div className="flex items-center gap-0.5 flex-wrap">
-                                {lobsterAgents.map((agent) => (
-                                  <PlatformToggleIcon
-                                    key={agent.id}
-                                    agent={agent}
-                                    skillName={detail.name}
-                                    isInstalled={installationMap.has(agent.id) || readOnlyAgentIds.has(agent.id)}
-                                    isReadOnly={readOnlyAgentIds.has(agent.id)}
-                                    isLoading={installingAgentId === agent.id}
-                                    onToggle={() => handleToggle(agent.id)}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {codingAgents.length > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider w-12 shrink-0">
-                                {t("sidebar.categoryCoding")}
-                              </span>
-                              <div className="flex items-center gap-0.5 flex-wrap">
-                                {codingAgents.map((agent) => (
-                                  <PlatformToggleIcon
-                                    key={agent.id}
-                                    agent={agent}
-                                    skillName={detail.name}
-                                    isInstalled={installationMap.has(agent.id) || readOnlyAgentIds.has(agent.id)}
-                                    isReadOnly={readOnlyAgentIds.has(agent.id)}
-                                    isLoading={installingAgentId === agent.id}
-                                    onToggle={() => handleToggle(agent.id)}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                          <PlatformToggleGroup
+                            label={t("sidebar.categoryLobster")}
+                            agents={lobsterAgents}
+                            skillName={detail.name}
+                            installationMap={installationMap}
+                            readOnlyAgentIds={readOnlyAgentIds}
+                            installingAgentId={installingAgentId}
+                            onToggle={handleToggle}
+                          />
+                          <PlatformToggleGroup
+                            label={t("sidebar.categoryCoding")}
+                            agents={codingAgents}
+                            skillName={detail.name}
+                            installationMap={installationMap}
+                            readOnlyAgentIds={readOnlyAgentIds}
+                            installingAgentId={installingAgentId}
+                            onToggle={handleToggle}
+                          />
                         </>
                       )}
                     </div>
