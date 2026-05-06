@@ -640,7 +640,7 @@ export function SettingsView() {
                     // Try to extract structured error from JSON-like error strings
                     let msg = raw;
                     let details: string | undefined;
-                    const prefix = "API 请求失败: ";
+                    const prefix = "API request failed: ";
                     if (raw.startsWith(prefix)) {
                       const after = raw.slice(prefix.length);
                       const nlIdx = after.indexOf("\n");

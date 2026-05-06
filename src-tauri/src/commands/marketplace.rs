@@ -634,43 +634,43 @@ fn classify_reqwest_error(e: &reqwest::Error, fallback_tried: bool) -> Explanati
     {
         (
             ExplanationErrorKind::Proxy,
-            "代理或网络隧道连接失败，请尝试切换区域端点或在终端执行 `unset HTTPS_PROXY HTTP_PROXY ALL_PROXY` 后重启应用".to_string(),
+            "Proxy or network tunnel connection failed. Try switching the regional endpoint, or run `unset HTTPS_PROXY HTTP_PROXY ALL_PROXY` in a terminal and restart the app.".to_string(),
             true,
         )
     } else if low.contains("proxy") {
         (
             ExplanationErrorKind::Proxy,
-            "系统代理可能拦截了请求。请尝试为该域名配置直连规则或切换区域端点".to_string(),
+            "The system proxy may be intercepting the request. Try adding a direct-connection rule for this domain, or switch the regional endpoint.".to_string(),
             true,
         )
     } else if e.is_timeout() || low.contains("timed out") {
         (
             ExplanationErrorKind::Timeout,
-            "请求超时，可能网络不通或被防火墙拦截。可在终端 `curl -v <url>` 验证连通性".to_string(),
+            "Request timed out. The network may be unreachable or blocked by a firewall. You can verify connectivity in a terminal with `curl -v <url>`.".to_string(),
             true,
         )
     } else if e.is_connect() || low.contains("connect") {
         (
             ExplanationErrorKind::Connect,
-            "无法建立连接。请确认 URL 可从本机访问，或尝试切换区域端点".to_string(),
+            "Could not establish a connection. Check that the URL is reachable from this machine, or try switching the regional endpoint.".to_string(),
             true,
         )
     } else if low.contains("dns") || low.contains("lookup") {
         (
             ExplanationErrorKind::Dns,
-            "DNS 解析失败。请确认域名拼写正确，或尝试切换 DNS".to_string(),
+            "DNS resolution failed. Check that the domain is spelled correctly, or try switching DNS servers.".to_string(),
             true,
         )
     } else if low.contains("certificate") || low.contains("tls") || low.contains("handshake") {
         (
             ExplanationErrorKind::Tls,
-            "TLS/证书握手失败。请检查系统时间是否正确，或排查中间人代理".to_string(),
+            "TLS/certificate handshake failed. Check that the system clock is correct, and check for any man-in-the-middle proxy.".to_string(),
             false,
         )
     } else {
         (
             ExplanationErrorKind::Unknown,
-            "网络请求失败".to_string(),
+            "Network request failed.".to_string(),
             false,
         )
     };
@@ -709,7 +709,7 @@ pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Resul
 
     let api_key = get_setting(&state.db, "ai_api_key")
         .await
-        .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?;
+        .ok_or_else(|| "Please configure an AI API key in Settings first.".to_string())?;
 
     let api_url = get_setting(&state.db, "ai_api_url")
         .await
@@ -728,7 +728,7 @@ pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Resul
 
     // Truncate content if too long
     let truncated = if content.len() > 8000 {
-        format!("{}...\n\n(内容已截断)", &content[..8000])
+        format!("{}...\n\n(content truncated)", &content[..8000])
     } else {
         content
     };
@@ -739,9 +739,10 @@ pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Resul
         messages: vec![ClaudeMessage {
             role: "user".to_string(),
             content: format!(
-                "请用中文简洁地解释以下 AI Agent Skill（SKILL.md）的用途、使用场景和关键功能。\
-                分为三部分：1) 一句话总结 2) 适用场景 3) 关键功能点。\
-                控制在 200 字以内。\n\n---\n\n{}",
+                "Please explain in English concisely the purpose, use cases, and key features \
+                of the following AI Agent Skill (SKILL.md). \
+                Divide into three parts: 1) One-sentence summary 2) Applicable scenarios 3) Key features. \
+                Keep it under 200 words.\n\n---\n\n{}",
                 truncated
             ),
         }],
@@ -767,18 +768,18 @@ pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Resul
         .json(&request)
         .send()
         .await
-        .map_err(|e| format!("API 请求失败: {}", format_reqwest_error(&e)))?;
+        .map_err(|e| format!("API request failed: {}", format_reqwest_error(&e)))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("API 返回错误 {}: {}", status, body));
+        return Err(format!("API returned error {}: {}", status, body));
     }
 
     let body = resp
         .text()
         .await
-        .map_err(|e| format!("读取响应失败: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {}", e))?;
 
     // Try parsing as Anthropic format: { "content": [{ "type": "text", "text": "..." }] }
     if let Ok(claude_resp) = serde_json::from_str::<ClaudeResponse>(&body) {
@@ -808,7 +809,7 @@ pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Resul
         }
     }
 
-    Err(format!("无法解析响应: {}", &body[..body.len().min(500)]))
+    Err(format!("Could not parse response: {}", &body[..body.len().min(500)]))
 }
 
 // ─── Streaming AI Explanation ────────────────────────────────────────────────
@@ -902,7 +903,7 @@ async fn cache_skill_explanation(
     .bind(&now)
     .execute(pool)
     .await
-    .map_err(|e| format!("缓存解释失败: {}", e))?;
+    .map_err(|e| format!("Failed to cache explanation: {}", e))?;
 
     Ok(())
 }
@@ -910,7 +911,7 @@ async fn cache_skill_explanation(
 fn empty_explanation_error_info(lang: &str, saw_thinking_delta: bool) -> ExplanationErrorInfo {
     let message = match lang {
         "en" => "The model returned no displayable explanation text.".to_string(),
-        _ => "模型没有返回可显示的解释正文。".to_string(),
+        _ => "The model returned no displayable explanation text.".to_string(),
     };
     let details = if saw_thinking_delta {
         "Streaming completed without any text_delta content. The provider emitted thinking deltas but no final text block.".to_string()
@@ -941,7 +942,7 @@ async fn get_ai_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
 /// Helper: truncate skill content to 8000 chars.
 fn truncate_content(content: &str) -> String {
     if content.len() > 8000 {
-        format!("{}...\n\n(内容已截断)", &content[..8000])
+        format!("{}...\n\n(content truncated)", &content[..8000])
     } else {
         content.to_string()
     }
@@ -962,7 +963,7 @@ fn build_explanation_prompt(truncated: &str, lang: &str) -> String {
             分为三部分：1) 一句话总结 2) 适用场景 3) 关键功能点。\
             控制在 200 字以内。\n\n---\n\n{}",
             truncated
-        ),
+        ), // zh fallback retained intentionally for users who switch to Chinese
     }
 }
 
@@ -1049,7 +1050,7 @@ async fn do_explain_skill_stream(
 ) -> Result<(), String> {
     let api_key = get_ai_setting(pool, "ai_api_key")
         .await
-        .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?;
+        .ok_or_else(|| "Please configure an AI API key in Settings first.".to_string())?;
 
     let api_url = get_ai_setting(pool, "ai_api_url")
         .await
@@ -1157,11 +1158,11 @@ async fn do_explain_skill_stream(
             ExplanationErrorKind::Response
         };
         let user_msg = if status_code == 401 || status_code == 403 {
-            "API Key 无效或权限不足，请检查设置中的 API Key".to_string()
+            "API key is invalid or lacks permission. Check the API key in Settings.".to_string()
         } else if status_code == 429 {
-            "请求过于频繁，请稍后重试".to_string()
+            "Too many requests. Please try again later.".to_string()
         } else {
-            format!("API 返回错误 {}", status)
+            format!("API returned error {}", status)
         };
         let err_info = ExplanationErrorInfo {
             message: user_msg,
@@ -1178,7 +1179,7 @@ async fn do_explain_skill_stream(
                 "error_info": err_info,
             }),
         );
-        return Err(format!("API 返回错误 {}: {}", status, body_text));
+        return Err(format!("API returned error {}: {}", status, body_text));
     }
 
     // Stream SSE response
@@ -1188,7 +1189,7 @@ async fn do_explain_skill_stream(
     let mut saw_thinking_delta = false;
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| format!("流读取失败: {}", e))?;
+        let chunk = chunk_result.map_err(|e| format!("Stream read failed: {}", e))?;
         sse_buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         // Process complete SSE lines
@@ -1465,8 +1466,8 @@ mod tests {
             .expect_err("expected connect failure");
         let msg = format_reqwest_error(&err);
         assert!(
-            msg.contains("切换区域端点") || msg.contains("建立连接"),
-            "expected actionable Chinese hint in formatted error, got: {msg}"
+            msg.contains("regional endpoint") || msg.contains("Could not establish a connection"),
+            "expected actionable hint in formatted error, got: {msg}"
         );
     }
 
