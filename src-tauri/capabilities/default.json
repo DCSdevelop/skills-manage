@@ -1,13 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Minimum permissions for the main window. The frontend only uses core IPC plus a single mkdir+write into ~/.agents/skills via plugin-fs; sql/dialog/shell plugins are not used by the JS layer.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "sql:default",
-    "fs:default",
-    "dialog:default",
-    "shell:default"
+    "fs:allow-mkdir",
+    "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$HOME/.agents/skills/**" }
+      ]
+    }
   ]
 }
